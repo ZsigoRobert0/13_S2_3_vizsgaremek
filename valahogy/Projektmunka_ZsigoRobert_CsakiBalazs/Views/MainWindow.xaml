@@ -1,0 +1,71 @@
+<Window x:Class="StockMaster.Wpf.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:lvc="http://livecharts.com/"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="StockMaster" Height="800" Width="1200">
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="3*" />
+            <ColumnDefinition Width="1.2*" />
+        </Grid.ColumnDefinitions>
+
+        <!-- Left: Chart and controls -->
+        <StackPanel Grid.Column="0" Margin="10">
+            <TextBlock Text="{Binding SelectedAssetDisplay}" FontSize="20" FontWeight="Bold" />
+            <!-- Timeframe buttons -->
+            <StackPanel Orientation="Horizontal" Margin="0,8">
+                <Button Content="1m" Command="{Binding SetTimeframeCommand}" CommandParameter="1m" />
+                <Button Content="5m" Command="{Binding SetTimeframeCommand}" CommandParameter="5m" Margin="6,0,0,0" />
+                <Button Content="15m" Command="{Binding SetTimeframeCommand}" CommandParameter="15m" Margin="6,0,0,0" />
+                <Button Content="1h" Command="{Binding SetTimeframeCommand}" CommandParameter="1h" Margin="6,0,0,0" />
+                <Button Content="1d" Command="{Binding SetTimeframeCommand}" CommandParameter="1d" Margin="6,0,0,0" />
+            </StackPanel>
+
+            <!-- Live chart area (placeholder for LiveCharts control) -->
+            <Border Height="450" BorderBrush="Gray" BorderThickness="1" CornerRadius="6">
+                <!-- A konkrét LiveCharts integráció XAML a LiveCharts lib dokumentációja szerint -->
+                <TextBlock VerticalAlignment="Center" HorizontalAlignment="Center" Foreground="Gray">Chart area (LiveCharts célpont)</TextBlock>
+            </Border>
+
+            <!-- Trade panel -->
+            <StackPanel Orientation="Horizontal" Margin="0,12">
+                <TextBox Width="120" Text="{Binding TradeQuantity}" />
+                <Button Content="BUY" Command="{Binding BuyCommand}" Width="100" Margin="8,0" Background="Green" Foreground="White" />
+                <Button Content="SELL" Command="{Binding SellCommand}" Width="100" Background="Red" Foreground="White" />
+            </StackPanel>
+
+            <!-- Position slider (holding split) -->
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,8">
+                <TextBlock Text="Eladó/Vevő arány:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                <ProgressBar Width="300" Value="{Binding BuyerRatioPercent}" Maximum="100"/>
+                <TextBlock Text="{Binding BuyerRatioPercent, StringFormat='{}{0}%'}" Margin="8,0,0,0"/>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- Right: Portfolio & settings -->
+        <StackPanel Grid.Column="1" Margin="10">
+            <GroupBox Header="Portfolio" Margin="0,0,0,10">
+                <StackPanel>
+                    <TextBlock Text="{Binding BalanceDisplay}" FontSize="16" />
+                    <ListBox ItemsSource="{Binding Positions}" DisplayMemberPath="Display" Height="200" />
+                </StackPanel>
+            </GroupBox>
+
+            <GroupBox Header="Oktatóanyagok" Height="300">
+                <StackPanel>
+                    <ListBox ItemsSource="{Binding Tutorials}" SelectedItem="{Binding SelectedTutorial}">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Title}" FontWeight="Bold"/>
+                                    <TextBlock Text="{Binding Summary}" FontSize="12" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    <Button Content="Megnyitás" Command="{Binding OpenTutorialCommand}" Margin="0,6,0,0" />
+                </StackPanel>
+            </GroupBox>
+        </StackPanel>
+    </Grid>
+</Window>
