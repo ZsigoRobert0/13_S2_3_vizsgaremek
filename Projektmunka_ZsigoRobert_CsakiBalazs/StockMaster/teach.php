@@ -101,6 +101,31 @@
       border-color: rgba(255,255,255,0.14);
     }
     .backBtn::before{ content:"←"; opacity:.75; }
+    .fullBtn{
+    
+     display:block;
+     width:90%;
+     margin-top:12px;
+     padding:12px 16px;
+     border-radius:12px;
+     background: rgba(255,255,255,0.06);
+     border: 1px solid rgba(255,255,255,0.08);
+     color:#fff;
+     text-align:center;
+     text-decoration:none;
+     font-weight:700;
+   }
+
+   .fullBtn:hover{
+     background: rgba(255,255,255,0.10);
+     border-color: rgba(255,255,255,0.14);
+    }
+    .oktato{
+         
+        color:#fff;
+      text-decoration:none;
+      font-weight:1000;
+    }
 
     @media (max-width: 850px){
       .grid{ grid-template-columns:1fr; }
@@ -109,10 +134,26 @@
 </head>
 <body>
 
-    <div class="wrap">
-        <a href="index.php" class="backBtn">Vissza a főoldalra</a>
+   <div class="wrap">
+        
+        <div class="card">
+            <h1 class="oktato">Oktatóanyagok</h1>
+            <div style="display:flex; justify-content:flex-end;">
+                
+               <a href="index.php" class="backBtn">Vissza a főoldalra</a>
 
-    </div>
+            </div>
+
+            <div style="max-height:520px; overflow:auto; margin-top:12px; padding:12px; border-radius:8px; background:rgba(255,255,255,0.02);">
+            <!-- teljes szélességű bevezető gomb -->
+            <a href="start_teach.php" class="fullBtn">Bevezetés a tőzsde világába</a>
+            
+            <div style="max-height:520px; overflow:auto; margin-top:12px; padding:12px; border-radius:8px; background:rgba(255,255,255,0.02);">
+                <!-- Ide kerülhet később tartalom -->
+            </div>
+        </div>
+ 
+     </div>
     
 </body>
 </html>
