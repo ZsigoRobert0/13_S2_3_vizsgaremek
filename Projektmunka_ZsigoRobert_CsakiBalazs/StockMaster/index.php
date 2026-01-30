@@ -271,6 +271,7 @@ h1{font-size:16px;margin:0}
             
             <div style="margin-top:12px; display:flex; gap:8px;">
                 <a href="logout.php" class="toggle" id="themeToggle" style="text-decoration:none;color:var(--text)">Kijelentkezés</a>
+                <a href="teach.php" class="toggle" style="text-decoration:none;color:var(--text)">Oktatóanyag</a>
                 <a class="toggle" href="stats.php" style="text-decoration:none;color:var(--text);display:inline-block;">
                     Statisztikák
                 <a class="toggle" href="transactions.php" style="text-decoration:none;color:var(--text);display:inline-block;">Tranzakció</a>
