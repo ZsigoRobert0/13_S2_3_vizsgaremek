@@ -2,18 +2,15 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/_bootstrap.php';
-require_once __DIR__ . '/auth.php';
-require_once __DIR__ . 'user_service.php';
-
-header('Content-Type: application/json; charset=utf-8');
-header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+require_once __DIR__ . '/user_service.php';
 
 requireLogin();
 
 $userId = currentUserId();
-$user = getUser($userId);
-?>
+$user   = getUser($userId);
 
+session_write_close();
+?>
 <!doctype html>
 <html lang="hu">
 <head>
@@ -130,7 +127,6 @@ $user = getUser($userId);
       <a href="index.php" class="backBtn">Vissza a főoldalra</a>
     </div>
 
-
     <div class="card">
       <div class="grid">
         <div>
@@ -215,7 +211,10 @@ $user = getUser($userId);
       const limit = document.getElementById("tLimit").value;
 
       fetch("get_transactionslog.php?limit=" + encodeURIComponent(limit), { cache: "no-store" })
-        .then(r => r.json())
+        .then(async (r) => {
+          if (r.status === 401) return [];
+          return await r.json();
+        })
         .then(rows => {
           tBody.innerHTML = "";
 
@@ -225,12 +224,12 @@ $user = getUser($userId);
           }
 
           rows.forEach(r => {
-            const tag = `<span class="tag ${r.type}">${labelType(r.type)}</span>`;
+            const tag = `<span class="tag ${escapeHtml(r.type)}">${labelType(r.type)}</span>`;
             const amt = formatAmt(r.amount, r.type);
 
             tBody.innerHTML += `
               <tr>
-                <td class="muted">${r.id}</td>
+                <td class="muted">${escapeHtml(r.id)}</td>
                 <td>${tag}</td>
                 <td>${amt}</td>
                 <td class="muted">${escapeHtml(r.time || "")}</td>

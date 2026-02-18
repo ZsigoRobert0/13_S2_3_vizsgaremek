@@ -2,16 +2,13 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/_bootstrap.php';
-require_once __DIR__ . '/auth.php';
-
-header('Content-Type: application/json; charset=utf-8');
-header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 
 requireLogin();
 
-$userId = (int)($_SESSION["user_id"] ?? 0);
+$conn   = legacy_db();
+$userId = currentUserId();
 
-// 1) Összegző statok (csak zárt pozik)
+// Összegző statok (csak zárt pozik)
 $sqlSummary = "
   SELECT
     COUNT(*) AS closedTrades,
@@ -25,9 +22,21 @@ $sqlSummary = "
   WHERE UserID = ? AND IsOpen = 0
 ";
 $stmt = $conn->prepare($sqlSummary);
-$stmt->bind_param("i", $userId);
+if (!$stmt) {
+    // UI oldalon egyszerűbb: dobjunk egy minimal hiba oldalt
+    exit('DB hiba (summary).');
+}
+$stmt->bind_param('i', $userId);
 $stmt->execute();
-$summary = $stmt->get_result()->fetch_assoc();
+$summary = $stmt->get_result()->fetch_assoc() ?: [
+    'closedTrades' => 0,
+    'totalPnl' => 0,
+    'avgPnl' => 0,
+    'winRate' => 0,
+    'avgHoldSec' => 0,
+    'bestTrade' => 0,
+    'worstTrade' => 0,
+];
 $stmt->close();
 
 // 2) Top eszközök PnL alapján
@@ -47,11 +56,16 @@ $sqlTopAssets = "
   LIMIT 10
 ";
 $stmt = $conn->prepare($sqlTopAssets);
-$stmt->bind_param("i", $userId);
+if (!$stmt) {
+    exit('DB hiba (top assets).');
+}
+$stmt->bind_param('i', $userId);
 $stmt->execute();
 $topAssets = [];
 $res = $stmt->get_result();
-while ($r = $res->fetch_assoc()) $topAssets[] = $r;
+while ($r = $res->fetch_assoc()) {
+    $topAssets[] = $r;
+}
 $stmt->close();
 
 // 3) Utolsó 50 zárt ügylet
@@ -75,14 +89,19 @@ $sqlLast = "
   LIMIT 50
 ";
 $stmt = $conn->prepare($sqlLast);
-$stmt->bind_param("i", $userId);
+if (!$stmt) {
+    exit('DB hiba (last trades).');
+}
+$stmt->bind_param('i', $userId);
 $stmt->execute();
 $lastTrades = [];
 $res = $stmt->get_result();
-while ($r = $res->fetch_assoc()) $lastTrades[] = $r;
+while ($r = $res->fetch_assoc()) {
+    $lastTrades[] = $r;
+}
 $stmt->close();
 
-function fmtTime($sec) {
+function fmtTime($sec): string {
   $sec = (int)$sec;
   if ($sec <= 0) return "—";
   $h = intdiv($sec, 3600);
@@ -90,6 +109,8 @@ function fmtTime($sec) {
   if ($h > 0) return $h . "h " . $m . "m";
   return $m . "m";
 }
+
+session_write_close();
 ?>
 <!DOCTYPE html>
 <html lang="hu">
@@ -217,7 +238,7 @@ html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Roboto,Arial,sans-seri
   font-size: 12px;
   opacity: 0.7;
 }
-.smNotifLink:hover{ 
+.smNotifLink:hover{
   color:#fff;
   opacity: 1;
 }
@@ -244,8 +265,6 @@ html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Roboto,Arial,sans-seri
 .smNotifItemTime{ opacity:0.6; font-size:12px; margin-top:6px; }
 
 .smNotifEmpty{ opacity:0.7; padding:14px; }
-
-
 </style>
 </head>
 <body>
@@ -255,23 +274,24 @@ html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Roboto,Arial,sans-seri
       <div style="font-size:20px;font-weight:900;">Statisztikák</div>
       <div style="color:var(--muted);font-size:12px;">Zárt ügyletek alapján</div>
     </div>
-      <div class="smNotifWrap">
-        <button class="smNotifBtn" id="smNotifBtn" type="button">
-          Értesítések
-          <span class="smNotifBadge" id="smNotifBadge" style="display:none;">0</span>
-        </button>
 
-        <div class="smNotifDropdown" id="smNotifDropdown" style="display:none;">
-          <div class="smNotifHeader">
-            <div class="smNotifTitle">Értesítések</div>
-            <button class="smNotifLink" id="smNotifMarkAll" type="button">Összes olvasott</button>
-          </div>
+    <div class="smNotifWrap">
+      <button class="smNotifBtn" id="smNotifBtn" type="button">
+        Értesítések
+        <span class="smNotifBadge" id="smNotifBadge" style="display:none;">0</span>
+      </button>
 
-          <div class="smNotifList" id="smNotifList">
-            <div class="smNotifEmpty">Betöltés…</div>
-          </div>
+      <div class="smNotifDropdown" id="smNotifDropdown" style="display:none;">
+        <div class="smNotifHeader">
+          <div class="smNotifTitle">Értesítések</div>
+          <button class="smNotifLink" id="smNotifMarkAll" type="button">Összes olvasott</button>
+        </div>
+
+        <div class="smNotifList" id="smNotifList">
+          <div class="smNotifEmpty">Betöltés…</div>
         </div>
       </div>
+    </div>
 
     <a class="back" href="index.php">← Vissza a főoldalra</a>
   </div>
@@ -280,42 +300,42 @@ html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Roboto,Arial,sans-seri
   <div class="grid">
     <div class="card">
       <div class="kpi-title">Zárt ügyletek</div>
-      <div class="kpi-val"><?= (int)$summary["closedTrades"] ?></div>
+      <div class="kpi-val"><?= (int)($summary["closedTrades"] ?? 0) ?></div>
       <div class="kpi-sub">lezárt ügyletek száma</div>
     </div>
 
     <div class="card">
       <div class="kpi-title">Össz PnL</div>
-      <div class="kpi-val <?= ((float)$summary["totalPnl"] >= 0 ? "good" : "bad") ?>">
-        <?= number_format((float)$summary["totalPnl"], 2) ?> €
+      <div class="kpi-val <?= ((float)($summary["totalPnl"] ?? 0) >= 0 ? "good" : "bad") ?>">
+        <?= number_format((float)($summary["totalPnl"] ?? 0), 2) ?> €
       </div>
       <div class="kpi-sub">ProfitLoss összeg</div>
     </div>
 
     <div class="card">
       <div class="kpi-title">Átlag PnL / trade</div>
-      <div class="kpi-val"><?= number_format((float)$summary["avgPnl"], 2) ?> €</div>
+      <div class="kpi-val"><?= number_format((float)($summary["avgPnl"] ?? 0), 2) ?> €</div>
       <div class="kpi-sub">ProfitLoss átlag</div>
     </div>
 
     <div class="card">
       <div class="kpi-title">Win rate</div>
-      <div class="kpi-val"><?= number_format(((float)$summary["winRate"]) * 100, 2) ?>%</div>
+      <div class="kpi-val"><?= number_format(((float)($summary["winRate"] ?? 0)) * 100, 2) ?>%</div>
       <div class="kpi-sub">nyerő / összes</div>
     </div>
 
     <div class="card">
       <div class="kpi-title">Átlag tartás</div>
-      <div class="kpi-val"><?= htmlspecialchars(fmtTime((float)$summary["avgHoldSec"])) ?></div>
+      <div class="kpi-val"><?= htmlspecialchars(fmtTime((float)($summary["avgHoldSec"] ?? 0)), ENT_QUOTES, 'UTF-8') ?></div>
       <div class="kpi-sub">Open → Close</div>
     </div>
 
     <div class="card">
       <div class="kpi-title">Best / Worst</div>
       <div class="kpi-val">
-        <span class="good"><?= number_format((float)$summary["bestTrade"], 2) ?>€</span>
+        <span class="good"><?= number_format((float)($summary["bestTrade"] ?? 0), 2) ?>€</span>
         <span style="color:var(--muted);"> / </span>
-        <span class="bad"><?= number_format((float)$summary["worstTrade"], 2) ?>€</span>
+        <span class="bad"><?= number_format((float)($summary["worstTrade"] ?? 0), 2) ?>€</span>
       </div>
       <div class="kpi-sub">legjobb/legrosszabb trade</div>
     </div>
@@ -341,15 +361,15 @@ html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Roboto,Arial,sans-seri
           <?php else: foreach ($topAssets as $r): ?>
             <tr>
               <td>
-                <div style="font-weight:800;"><?= htmlspecialchars($r["Symbol"]) ?></div>
-                <div style="font-size:11px;color:var(--muted);"><?= htmlspecialchars($r["Name"]) ?></div>
+                <div style="font-weight:800;"><?= htmlspecialchars((string)$r["Symbol"], ENT_QUOTES, 'UTF-8') ?></div>
+                <div style="font-size:11px;color:var(--muted);"><?= htmlspecialchars((string)$r["Name"], ENT_QUOTES, 'UTF-8') ?></div>
               </td>
               <td><?= (int)$r["trades"] ?></td>
               <td class="<?= ((float)$r["totalPnl"] >= 0 ? "good" : "bad") ?>">
                 <?= number_format((float)$r["totalPnl"], 2) ?> €
               </td>
               <td><?= number_format((float)$r["avgPnl"], 2) ?> €</td>
-              <td><?= htmlspecialchars(fmtTime((float)$r["avgHoldSec"])) ?></td>
+              <td><?= htmlspecialchars(fmtTime((float)$r["avgHoldSec"]), ENT_QUOTES, 'UTF-8') ?></td>
             </tr>
           <?php endforeach; endif; ?>
         </tbody>
@@ -379,17 +399,17 @@ html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Roboto,Arial,sans-seri
             <?php else: foreach ($lastTrades as $t): ?>
               <tr>
                 <td>
-                  <div style="font-weight:800;"><?= htmlspecialchars($t["Symbol"]) ?></div>
-                  <div style="font-size:11px;color:var(--muted);"><?= htmlspecialchars($t["Name"]) ?></div>
+                  <div style="font-weight:800;"><?= htmlspecialchars((string)$t["Symbol"], ENT_QUOTES, 'UTF-8') ?></div>
+                  <div style="font-size:11px;color:var(--muted);"><?= htmlspecialchars((string)$t["Name"], ENT_QUOTES, 'UTF-8') ?></div>
                 </td>
-                <td><span class="tag"><?= htmlspecialchars($t["PositionType"]) ?></span></td>
+                <td><span class="tag"><?= htmlspecialchars((string)$t["PositionType"], ENT_QUOTES, 'UTF-8') ?></span></td>
                 <td><?= number_format((float)$t["Quantity"], 2) ?></td>
                 <td><?= number_format((float)$t["EntryPrice"], 2) ?></td>
                 <td><?= number_format((float)$t["ExitPrice"], 2) ?></td>
                 <td class="<?= ((float)$t["ProfitLoss"] >= 0 ? "good" : "bad") ?>">
                   <?= number_format((float)$t["ProfitLoss"], 2) ?> €
                 </td>
-                <td><?= htmlspecialchars(fmtTime((float)$t["holdSec"])) ?></td>
+                <td><?= htmlspecialchars(fmtTime((float)$t["holdSec"]), ENT_QUOTES, 'UTF-8') ?></td>
               </tr>
             <?php endforeach; endif; ?>
           </tbody>
@@ -399,6 +419,7 @@ html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Roboto,Arial,sans-seri
   </div>
 
 </div>
+
 <script>
 (() => {
   const btn = document.getElementById("smNotifBtn");
@@ -487,7 +508,6 @@ html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Roboto,Arial,sans-seri
   load();
 })();
 </script>
-
 
 </body>
 </html>

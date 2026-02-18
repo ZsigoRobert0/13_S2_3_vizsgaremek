@@ -1,52 +1,67 @@
 <?php
-require __DIR__ . '_bootstrap.php';
+declare(strict_types=1);
+
+require_once __DIR__ . '/_bootstrap.php';
+require_once __DIR__ . '/finnhub_http.php';
 
 set_time_limit(120);
 ini_set('memory_limit', '512M');
 
-$apiKey = "d4si64pr01qvsjbhte00d4si64pr01qvsjbhte0g";
+$conn = legacy_db();
 
-// USA részvények (NASDAQ+NYSE+AMEX) lekérése
-$url = "https://finnhub.io/api/v1/stock/symbol?exchange=US&token=$apiKey";
-$json = file_get_contents($url);
-
-if ($json === false) {
-    die("Nem sikerült lekérni az API-t (file_get_contents).");
+$apiKey = (string) legacy_env('FINNHUB_API_KEY', '');
+if ($apiKey === '') {
+    exit('Hiányzik a FINNHUB_API_KEY az .env fájlban.');
 }
 
-$data = json_decode($json, true);
+// USA részvények lekérése (NASDAQ + NYSE + AMEX)
+$url  = 'https://finnhub.io/api/v1/stock/symbol?exchange=US&token=' . urlencode($apiKey);
+$resp = finnhub_get_json($url);
+
+if (!($resp['ok'] ?? false)) {
+    exit('Finnhub API hiba. HTTP: ' . (int)($resp['http'] ?? 0));
+}
+
+$data = $resp['data'] ?? [];
 
 if (!is_array($data)) {
-    die("API hiba: nem érvényes JSON érkezett.");
+    exit('API hiba: nem érvényes JSON érkezett.');
 }
 
-// Prepare statement az INSERT-hez
-$stmt = $conn->prepare("INSERT INTO assets (Symbol, Name, IsTradable) VALUES (?, ?, 1)");
+// Duplikáció elkerülés 
+$stmt = $conn->prepare("
+    INSERT INTO assets (Symbol, Name, IsTradable)
+    VALUES (?, ?, 1)
+    ON DUPLICATE KEY UPDATE
+        Name = VALUES(Name)
+");
 
 if (!$stmt) {
-    die("Prepare hiba: " . $conn->error);
+    exit('Prepare hiba: ' . $conn->error);
 }
 
 $inserted = 0;
-$maxRows  = 300; // ELSŐ KÖRBEN CSAK 300 RÉSZVÉNYT SZÚRUNK BE
+$maxRows  = 300; // első körben limitált import
 
 foreach ($data as $stock) {
 
     if ($inserted >= $maxRows) {
-        break; // megállunk 300 db után
+        break;
     }
 
-    $symbol = $stock["symbol"] ?? "";
-    $name   = $stock["description"] ?? "";
+    $symbol = strtoupper(trim((string)($stock['symbol'] ?? '')));
+    $name   = trim((string)($stock['description'] ?? ''));
 
-    // szűrés pár hülyeség ellen
-    if ($symbol === "" || $name === "") continue;
-    if (strpos($symbol, "-") !== false) continue; // pl. furcsa típusok kizárása
+    // Szűrések
+    if ($symbol === '' || $name === '') continue;
+    if (strpos($symbol, '-') !== false) continue;
 
-    $stmt->bind_param("ss", $symbol, $name);
+    $stmt->bind_param('ss', $symbol, $name);
     $stmt->execute();
 
     $inserted++;
 }
 
-echo "Sikeresen importálva: $inserted részvény az assets táblába.";
+$stmt->close();
+
+echo "Sikeresen importálva / frissítve: {$inserted} részvény az assets táblába.";

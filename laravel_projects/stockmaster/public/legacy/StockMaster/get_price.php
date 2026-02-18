@@ -1,45 +1,54 @@
 <?php
-require_once __DIR__ .'_bootstrap.php';
+declare(strict_types=1);
+
+require_once __DIR__ . '/_bootstrap.php';
 require_once __DIR__ . '/finnhub_http.php';
 
-header("Content-Type: application/json; charset=utf-8");
-
-$userId = currentUserId();
-if ($userId <= 0) {
-  echo json_encode(["ok" => false, "error" => "Nincs bejelentkezve"]);
-  exit;
+if (!isLoggedIn()) {
+    legacy_json(['ok' => false, 'error' => 'Nincs bejelentkezve'], 401);
 }
+
 session_write_close();
 
-$symbol = strtoupper(trim($_GET["symbol"] ?? ""));
-if ($symbol === "") {
-  echo json_encode(["ok" => false, "error" => "Hiányzó symbol"]);
-  exit;
+$symbol = strtoupper(trim((string)($_GET['symbol'] ?? '')));
+if ($symbol === '') {
+    legacy_json(['ok' => false, 'error' => 'Hiányzó symbol'], 400);
 }
 
-$apiKey = defined("FINNHUB_API_KEY") ? FINNHUB_API_KEY : "";
-if ($apiKey === "") {
-  echo json_encode(["ok" => false, "error" => "Hiányzik a FINNHUB_API_KEY"]);
-  exit;
+// Bootstrapból jön az env (safe): FINNHUB_API_KEY
+$apiKey = (string) legacy_env('FINNHUB_API_KEY', '');
+if ($apiKey === '') {
+    legacy_json(['ok' => false, 'error' => 'Hiányzik a FINNHUB_API_KEY'], 500);
 }
 
-$url = "https://finnhub.io/api/v1/quote?symbol=" . urlencode($symbol) . "&token=" . urlencode($apiKey);
-$data = finnhub_get_json($url);
+$url  = 'https://finnhub.io/api/v1/quote?symbol=' . urlencode($symbol) . '&token=' . urlencode($apiKey);
+$resp = finnhub_get_json($url);
 
-if (!($data["_ok"] ?? false) || !isset($data["c"])) {
-  echo json_encode([
-    "ok" => false,
-    "error" => "Nem sikerült az árfolyam lekérése (API)",
-    "symbol" => $symbol,
-    "http" => $data["_http"] ?? 0,
-    "err" => $data["_err"] ?? "unknown"
-  ]);
-  exit;
+if (!($resp['ok'] ?? false)) {
+    legacy_json([
+        'ok'     => false,
+        'error'  => 'Nem sikerült az árfolyam lekérése (API)',
+        'symbol' => $symbol,
+        'http'   => (int)($resp['http'] ?? 0),
+        'err'    => (string)($resp['error'] ?? 'unknown'),
+    ], 502);
 }
 
-echo json_encode([
-  "ok" => true,
-  "symbol" => $symbol,
-  "price" => (float)$data["c"],
-  "source" => "api"
+$data = $resp['data'] ?? [];
+$price = $data['c'] ?? null;
+
+if (!is_numeric($price)) {
+    legacy_json([
+        'ok'     => false,
+        'error'  => 'Nem sikerült az árfolyam lekérése (hiányzó adat)',
+        'symbol' => $symbol,
+        'http'   => (int)($resp['http'] ?? 0),
+    ], 502);
+}
+
+legacy_json([
+    'ok'     => true,
+    'symbol' => $symbol,
+    'price'  => (float)$price,
+    'source' => 'api',
 ]);

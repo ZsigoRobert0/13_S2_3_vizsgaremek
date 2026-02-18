@@ -2,39 +2,52 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/_bootstrap.php';
-require_once __DIR__ . '/auth.php';
 
-header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 
-requireLogin();
-
-$userId = (int)($_SESSION["user_id"] ?? 0);
-if ($userId <= 0) {
-  http_response_code(401);
-  echo json_encode(["ok" => false, "error" => "Nincs bejelentkezve."]);
-  exit;
+if (!isLoggedIn()) {
+    legacy_json(['ok' => false, 'error' => 'Nincs bejelentkezve.'], 401);
 }
 
-// session lock elkerülése (a DB-hez már nem kell session)
+$conn   = legacy_db();
+$userId = currentUserId();
+
 session_write_close();
 
-$raw = file_get_contents("php://input");
-$payload = json_decode($raw ?: "{}", true);
-if (!is_array($payload)) $payload = [];
+$raw = file_get_contents('php://input');
+$payload = json_decode($raw ?: '{}', true);
+if (!is_array($payload)) {
+    $payload = [];
+}
 
-$autoLogin = (int)($payload["AutoLogin"] ?? 0);
-$receiveNotifications = (int)($payload["ReceiveNotifications"] ?? 1);
-$chartTheme = (string)($payload["PreferredChartTheme"] ?? "dark");
-$chartInterval = (string)($payload["PreferredChartInterval"] ?? "1m");
+// ---- Base settings ----
+$autoLogin           = (int)($payload['AutoLogin'] ?? 0);
+$receiveNotifications = (int)($payload['ReceiveNotifications'] ?? 1);
 
-// ÚJ: limitek
-$newsLimit = (int)($payload["NewsLimit"] ?? 8);
-$newsPerSymbolLimit = (int)($payload["NewsPerSymbolLimit"] ?? 3);
-$newsPortfolioTotalLimit = (int)($payload["NewsPortfolioTotalLimit"] ?? 20);
-$calendarLimit = (int)($payload["CalendarLimit"] ?? 8);
+// Frontend név keveredés miatt: PreferredChartTheme vagy ChartTheme
+$chartTheme    = (string)($payload['PreferredChartTheme'] ?? $payload['ChartTheme'] ?? 'dark');
+$chartInterval = (string)($payload['PreferredChartInterval'] ?? '1m');
 
-// clamp
+// ---- Limits (new fields) ----
+$newsLimit               = (int)($payload['NewsLimit'] ?? 8);
+$newsPerSymbolLimit      = (int)($payload['NewsPerSymbolLimit'] ?? 3);
+$newsPortfolioTotalLimit = (int)($payload['NewsPortfolioTotalLimit'] ?? 20);
+$calendarLimit           = (int)($payload['CalendarLimit'] ?? 8);
+
+// ---- Clamp ----
+$autoLogin = $autoLogin ? 1 : 0;
+$receiveNotifications = $receiveNotifications ? 1 : 0;
+
+$chartTheme = strtolower(trim($chartTheme));
+if (!in_array($chartTheme, ['dark', 'light'], true)) {
+    $chartTheme = 'dark';
+}
+
+$chartInterval = trim($chartInterval);
+if ($chartInterval === '') {
+    $chartInterval = '1m';
+}
+
 if ($newsLimit < 3) $newsLimit = 3;
 if ($newsLimit > 30) $newsLimit = 30;
 
@@ -47,102 +60,117 @@ if ($newsPortfolioTotalLimit > 60) $newsPortfolioTotalLimit = 60;
 if ($calendarLimit < 3) $calendarLimit = 3;
 if ($calendarLimit > 60) $calendarLimit = 60;
 
-// Megnézzük van-e már usersettings rekord
-$exists = false;
-$chk = $conn->prepare("SELECT 1 FROM usersettings WHERE UserID = ? LIMIT 1");
-$chk->bind_param("i", $userId);
-$chk->execute();
+$chk = $conn->prepare('SELECT 1 FROM usersettings WHERE UserID = ? LIMIT 1');
+if (!$chk) {
+    legacy_json(['ok' => false, 'error' => 'DB prepare hiba (exists).'], 500);
+}
+$chk->bind_param('i', $userId);
+if (!$chk->execute()) {
+    $chk->close();
+    legacy_json(['ok' => false, 'error' => 'DB execute hiba (exists).'], 500);
+}
 $chk->store_result();
 $exists = ($chk->num_rows > 0);
 $chk->close();
 
-// Próbáljuk menteni az ÚJ oszlopokkal együtt.
-// Ha még nem futtattad le az ALTER TABLE-t, ez a prepare FAIL lesz -> fallback a régi mezőkre.
+$warning = null;
+
 if ($exists) {
-  $stmt = @$conn->prepare("
-    UPDATE usersettings
-    SET AutoLogin = ?, ReceiveNotifications = ?, PreferredChartTheme = ?, PreferredChartInterval = ?,
-        NewsLimit = ?, NewsPerSymbolLimit = ?, NewsPortfolioTotalLimit = ?, CalendarLimit = ?
-    WHERE UserID = ?
-  ");
+    // UPDATE (extended)
+    $stmt = @$conn->prepare("
+        UPDATE usersettings
+        SET AutoLogin = ?,
+            ReceiveNotifications = ?,
+            PreferredChartTheme = ?,
+            PreferredChartInterval = ?,
+            NewsLimit = ?,
+            NewsPerSymbolLimit = ?,
+            NewsPortfolioTotalLimit = ?,
+            CalendarLimit = ?
+        WHERE UserID = ?
+    ");
 
-  if ($stmt) {
-    $stmt->bind_param(
-      "iissiiiii",
-      $autoLogin, $receiveNotifications, $chartTheme, $chartInterval,
-      $newsLimit, $newsPerSymbolLimit, $newsPortfolioTotalLimit, $calendarLimit,
-      $userId
-    );
-    $ok = $stmt->execute();
-    $stmt->close();
-    echo json_encode(["ok" => (bool)$ok]);
-    exit;
-  }
+    if ($stmt) {
+        $stmt->bind_param(
+            'iissiiiii',
+            $autoLogin,
+            $receiveNotifications,
+            $chartTheme,
+            $chartInterval,
+            $newsLimit,
+            $newsPerSymbolLimit,
+            $newsPortfolioTotalLimit,
+            $calendarLimit,
+            $userId
+        );
 
-  // fallback (régi oszlopok)
-  $stmt2 = $conn->prepare("
-    UPDATE usersettings
-    SET AutoLogin = ?, ReceiveNotifications = ?, PreferredChartTheme = ?, PreferredChartInterval = ?
-    WHERE UserID = ?
-  ");
-  $stmt2->bind_param("iissi", $autoLogin, $receiveNotifications, $chartTheme, $chartInterval, $userId);
-  $ok2 = $stmt2->execute();
-  $stmt2->close();
+        $ok = $stmt->execute();
+        $stmt->close();
 
-  echo json_encode([
-    "ok" => (bool)$ok2,
-    "warning" => "A limit mezők nem mentődtek (hiányoznak az oszlopok). Futtasd le az ALTER TABLE SQL-t."
-  ]);
-  exit;
+        legacy_json(['ok' => (bool)$ok]);
+    }
 
-} else {
-  $stmt = @$conn->prepare("
-    INSERT INTO usersettings
-      (UserID, AutoLogin, ReceiveNotifications, PreferredChartTheme, PreferredChartInterval,
-       NewsLimit, NewsPerSymbolLimit, NewsPortfolioTotalLimit, CalendarLimit)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  ");
+    // UPDATE fallback (legacy fields only)
+    $stmt2 = $conn->prepare("
+        UPDATE usersettings
+        SET AutoLogin = ?,
+            ReceiveNotifications = ?,
+            PreferredChartTheme = ?,
+            PreferredChartInterval = ?
+        WHERE UserID = ?
+    ");
+    if (!$stmt2) {
+        legacy_json(['ok' => false, 'error' => 'DB prepare hiba (fallback update).'], 500);
+    }
 
-  if ($stmt) {
-    $stmt->bind_param(
-      "iiissi iii",
-      $userId, $autoLogin, $receiveNotifications, $chartTheme, $chartInterval,
-      $newsLimit, $newsPerSymbolLimit, $newsPortfolioTotalLimit, $calendarLimit
-    );
-    // ↑ mysqli nem szereti a szóközös típust, ezért külön bontom:
-  }
+    $stmt2->bind_param('iissi', $autoLogin, $receiveNotifications, $chartTheme, $chartInterval, $userId);
+    $ok2 = $stmt2->execute();
+    $stmt2->close();
+
+    $warning = 'A limit mezők nem mentődtek (hiányoznak az oszlopok). Futtasd le az ALTER TABLE SQL-t.';
+    legacy_json(['ok' => (bool)$ok2, 'warning' => $warning]);
 }
 
-// A fenti "iiissi iii" miatt biztosra megyünk: duplán, helyesen:
+// INSERT (extended)
 $stmt = @$conn->prepare("
-  INSERT INTO usersettings
-    (UserID, AutoLogin, ReceiveNotifications, PreferredChartTheme, PreferredChartInterval,
-     NewsLimit, NewsPerSymbolLimit, NewsPortfolioTotalLimit, CalendarLimit)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO usersettings
+        (UserID, AutoLogin, ReceiveNotifications, PreferredChartTheme, PreferredChartInterval,
+         NewsLimit, NewsPerSymbolLimit, NewsPortfolioTotalLimit, CalendarLimit)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ");
 
 if ($stmt) {
-  $stmt->bind_param(
-    "iiissiiii",
-    $userId, $autoLogin, $receiveNotifications, $chartTheme, $chartInterval,
-    $newsLimit, $newsPerSymbolLimit, $newsPortfolioTotalLimit, $calendarLimit
-  );
-  $ok = $stmt->execute();
-  $stmt->close();
-  echo json_encode(["ok" => (bool)$ok]);
-  exit;
+    $stmt->bind_param(
+        'iiissiiii',
+        $userId,
+        $autoLogin,
+        $receiveNotifications,
+        $chartTheme,
+        $chartInterval,
+        $newsLimit,
+        $newsPerSymbolLimit,
+        $newsPortfolioTotalLimit,
+        $calendarLimit
+    );
+
+    $ok = $stmt->execute();
+    $stmt->close();
+
+    legacy_json(['ok' => (bool)$ok]);
 }
 
-// fallback insert (régi oszlopok)
 $stmt2 = $conn->prepare("
-  INSERT INTO usersettings (UserID, AutoLogin, ReceiveNotifications, PreferredChartTheme, PreferredChartInterval)
-  VALUES (?, ?, ?, ?, ?)
+    INSERT INTO usersettings
+        (UserID, AutoLogin, ReceiveNotifications, PreferredChartTheme, PreferredChartInterval)
+    VALUES (?, ?, ?, ?, ?)
 ");
-$stmt2->bind_param("iiiss", $userId, $autoLogin, $receiveNotifications, $chartTheme, $chartInterval);
+if (!$stmt2) {
+    legacy_json(['ok' => false, 'error' => 'DB prepare hiba (fallback insert).'], 500);
+}
+
+$stmt2->bind_param('iiiss', $userId, $autoLogin, $receiveNotifications, $chartTheme, $chartInterval);
 $ok2 = $stmt2->execute();
 $stmt2->close();
 
-echo json_encode([
-  "ok" => (bool)$ok2,
-  "warning" => "A limit mezők nem mentődtek (hiányoznak az oszlopok). Futtasd le az ALTER TABLE SQL-t."
-]);
+$warning = 'A limit mezők nem mentődtek (hiányoznak az oszlopok). Futtasd le az ALTER TABLE SQL-t.';
+legacy_json(['ok' => (bool)$ok2, 'warning' => $warning]);

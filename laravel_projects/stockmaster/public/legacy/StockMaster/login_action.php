@@ -1,33 +1,56 @@
 <?php
-require_once __DIR__ . '_bootstrap.php';
+declare(strict_types=1);
 
-$username = trim($_POST["username"]);
-$password = trim($_POST["password"]);
+require_once __DIR__ . '/_bootstrap.php';
 
-$stmt = $conn->prepare("SELECT ID, PasswordHash FROM Users WHERE Username=?");
-$stmt->bind_param("s", $username);
-$stmt->execute();
-$stmt->store_result();
+$username = trim((string)($_POST['username'] ?? ''));
+$password = trim((string)($_POST['password'] ?? ''));
 
-if ($stmt->num_rows == 0) {
-    $_SESSION["error"] = "Nincs ilyen felhasználó!";
-    header("Location: ../StockMaster/login.php");
-    exit;
+if ($username === '' || $password === '') {
+    $_SESSION['error'] = 'Hiányzó felhasználónév vagy jelszó.';
+    legacy_redirect('login.php');
 }
 
-$stmt->bind_result($id, $hash);
-$stmt->fetch();
+$conn = legacy_db();
+
+$stmt = $conn->prepare("SELECT ID, PasswordHash FROM users WHERE Username = ? LIMIT 1");
+if (!$stmt) {
+    $_SESSION['error'] = 'Adatbázis hiba (prepare).';
+    legacy_redirect('login.php');
+}
+
+$stmt->bind_param('s', $username);
+
+if (!$stmt->execute()) {
+    $stmt->close();
+    $_SESSION['error'] = 'Adatbázis hiba (execute).';
+    legacy_redirect('login.php');
+}
+
+$res = $stmt->get_result();
+$row = $res ? $res->fetch_assoc() : null;
+$stmt->close();
+
+if (!$row) {
+    $_SESSION['error'] = 'Hibás felhasználónév vagy jelszó.';
+    legacy_redirect('login.php');
+}
+
+$userId = (int)($row['ID'] ?? 0);
+$hash   = (string)($row['PasswordHash'] ?? '');
+
+if ($userId <= 0 || $hash === '') {
+    $_SESSION['error'] = 'Hibás felhasználónév vagy jelszó.';
+    legacy_redirect('login.php');
+}
 
 if (!password_verify($password, $hash)) {
-    $_SESSION["error"] = "Hibás jelszó!";
-    header("Location: ../StockMaster/login.php");
-    exit;
+    $_SESSION['error'] = 'Hibás felhasználónév vagy jelszó.';
+    legacy_redirect('login.php');
 }
 
+$_SESSION['user_id'] = $userId;
 
-// success:
-$_SESSION["user_id"] = $id;
+session_regenerate_id(true);
 
-header("Location: ../StockMaster/index.php");
-exit;
-?>
+legacy_redirect('index.php');

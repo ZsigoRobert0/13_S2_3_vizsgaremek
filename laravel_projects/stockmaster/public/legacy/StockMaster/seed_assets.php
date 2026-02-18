@@ -1,9 +1,16 @@
 <?php
-// seed_assets.php
-require __DIR__ . '_bootstrap.php';
+declare(strict_types=1);
 
-// Növeljük egy kicsit a limitet, ha sokat szúrunk
+require_once __DIR__ . '/_bootstrap.php';
+
+//csak bejelentkezve fusson
+if (!isLoggedIn()) {
+     exit('Unauthorized.');
+}
+
 set_time_limit(60);
+
+$conn = legacy_db();
 
 $assets = [
     // --- USA tech + mega caps ---
@@ -64,23 +71,40 @@ $assets = [
     ['TMO',   'Thermo Fisher Scientific Inc.'],
     ['HON',   'Honeywell International Inc.'],
     ['IBM',   'International Business Machines Corporation'],
-    ['SPY',   'SPDR S&P 500 ETF Trust'],  
-
+    ['SPY',   'SPDR S&P 500 ETF Trust'],
 ];
 
-$stmt = $conn->prepare("INSERT IGNORE INTO assets (Symbol, Name, IsTradable) VALUES (?, ?, 1)");
+$stmt = $conn->prepare("
+    INSERT INTO assets (Symbol, Name, IsTradable)
+    VALUES (?, ?, 1)
+    ON DUPLICATE KEY UPDATE
+        Name = VALUES(Name)
+");
+
 if (!$stmt) {
-    die("Prepare error: " . $conn->error);
+    exit('Prepare hiba: ' . $conn->error);
 }
 
 $inserted = 0;
+
 foreach ($assets as $a) {
     [$sym, $name] = $a;
-    $stmt->bind_param("ss", $sym, $name);
+
+    $sym  = strtoupper(trim($sym));
+    $name = trim($name);
+
+    if ($sym === '' || $name === '') {
+        continue;
+    }
+
+    $stmt->bind_param('ss', $sym, $name);
     $stmt->execute();
+
     if ($stmt->affected_rows > 0) {
         $inserted++;
     }
 }
 
-echo "Sikeresen beszúrva: {$inserted} részvény az assets táblába.";
+$stmt->close();
+
+echo "Sikeresen beszúrva / frissítve: {$inserted} részvény az assets táblába.";

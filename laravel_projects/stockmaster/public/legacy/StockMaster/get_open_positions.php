@@ -1,33 +1,48 @@
 <?php
-session_start();
-require __DIR__ . '_bootstrap.php';
+declare(strict_types=1);
 
-header('Content-Type: application/json; charset=utf-8');
+require_once __DIR__ . '/_bootstrap.php';
 
-if (!isset($_SESSION['user_id'])) {
-    http_response_code(401);
-    echo json_encode(["error" => "Nincs bejelentkezve."]);
-    exit;
+if (!isLoggedIn()) {
+    legacy_json(['error' => 'Nincs bejelentkezve.'], 401);
 }
 
-
-$userId = (int)$_SESSION['user_id'];
+$conn   = legacy_db();
+$userId = currentUserId();
 
 $stmt = $conn->prepare("
-    SELECT p.ID, p.AssetID, p.OpenTime, p.Quantity, p.EntryPrice, p.PositionType, p.ProfitLoss
+    SELECT
+        p.ID,
+        p.AssetID,
+        p.OpenTime,
+        p.Quantity,
+        p.EntryPrice,
+        p.PositionType,
+        p.ProfitLoss
     FROM positions p
     WHERE p.UserID = ? AND p.IsOpen = 1
     ORDER BY p.OpenTime DESC
 ");
+
+if (!$stmt) {
+    legacy_json(['error' => 'DB prepare hiba.'], 500);
+}
+
 $stmt->bind_param("i", $userId);
-$stmt->execute();
+
+if (!$stmt->execute()) {
+    $stmt->close();
+    legacy_json(['error' => 'DB execute hiba.'], 500);
+}
+
 $res = $stmt->get_result();
 
 $rows = [];
 while ($row = $res->fetch_assoc()) {
+    
     $rows[] = $row;
 }
 
-echo json_encode($rows);
+$stmt->close();
 
-
+legacy_json($rows);

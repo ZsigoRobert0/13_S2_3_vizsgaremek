@@ -1,7 +1,9 @@
 <?php
-session_start();
-?>
+declare(strict_types=1);
 
+require_once __DIR__ . '/_bootstrap.php';
+
+?>
 <!DOCTYPE html>
 <html lang="hu">
 <head>
@@ -22,11 +24,11 @@ session_start();
             <h1 class="login-title">Bejelentkezés</h1>
 
             <!-- PHP hiba kiírás -->
-            <?php if (isset($_SESSION["error"])): ?>
+            <?php if (!empty($_SESSION['error'])): ?>
                 <div class="alert error">
-                    <?php 
-                        echo htmlspecialchars($_SESSION["error"]); 
-                        unset($_SESSION["error"]); 
+                    <?php
+                        echo htmlspecialchars((string)$_SESSION['error'], ENT_QUOTES, 'UTF-8');
+                        unset($_SESSION['error']);
                     ?>
                 </div>
             <?php endif; ?>
@@ -53,7 +55,7 @@ session_start();
         </div>
 
         <div class="login-footer-text">
-            © <?php echo date("Y"); ?> StockMaster • Portfóliókezelő
+            © <?php echo date('Y'); ?> StockMaster • Portfóliókezelő
         </div>
     </div>
 

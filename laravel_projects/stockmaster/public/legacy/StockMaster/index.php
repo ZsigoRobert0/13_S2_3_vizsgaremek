@@ -1,32 +1,36 @@
 <?php
-require_once __DIR__ . '_bootstrap.php';
-require_once __DIR__ . 'auth.php';
+declare(strict_types=1);
+
+require_once __DIR__ . '/_bootstrap.php';
+
 requireLogin();
-require_once __DIR__ . 'user_service.php';
 
+require_once __DIR__ . '/user_service.php';
 
+$conn   = legacy_db();
 $userId = currentUserId();
+
 $user = getUser($userId);
 
+// Assets lista (tradable)
+$assets = [];
+$res = $conn->query("
+    SELECT Symbol, Name
+    FROM assets
+    WHERE IsTradable = 1
+    ORDER BY Symbol
+    LIMIT 500
+");
 
-
-    $assets = [];
-        $res = $conn->query("
-                SELECT Symbol, Name 
-                FROM assets 
-                WHERE IsTradable = 1 
-                ORDER BY Symbol 
-                LIMIT 500
-            ");
-while ($row = $res->fetch_assoc()) {
-    $assets[] = [
-        "symbol" => $row["Symbol"],
-        "name"   => $row["Name"],
-    ];
+if ($res) {
+    while ($row = $res->fetch_assoc()) {
+        $assets[] = [
+            'symbol' => $row['Symbol'],
+            'name'   => $row['Name'],
+        ];
+    }
 }
-
 ?>
-
 <!DOCTYPE html>
 <html lang="hu">
 <head>
@@ -195,8 +199,6 @@ html,body{
     background:rgba(148,163,184,0.9);
 }
 
-
-
 /* header */
 .brand{display:flex;align-items:center;gap:10px;margin-bottom:12px;}
 .logo{width:40px;height:40px;border-radius:8px;display:flex;align-items:center;justify-content:center;}
@@ -259,7 +261,7 @@ h1{font-size:16px;margin:0}
             <div class="logo"> <img src="StockMaster.png" alt="logo"></div>
             <div>
                 <h1>StockMaster</h1>
-                <div class="sub">Üdv, <?php echo htmlspecialchars($user["Username"]); ?>!</div>
+                <div class="sub">Üdv, <?php echo htmlspecialchars((string)($user["Username"] ?? ""), ENT_QUOTES, 'UTF-8'); ?>!</div>
             </div>
         </div>
 
@@ -268,7 +270,7 @@ h1{font-size:16px;margin:0}
         <div class="instruments" id="instruments"></div>
 
         <div style="margin-top:12px;font-size:12px;color:var(--muted)">
-            <div><strong>Záróegyenleg:</strong> <span id="balance-mini"><?php echo $user["DemoBalance"]; ?> €</span></div>
+            <div><strong>Záróegyenleg:</strong> <span id="balance-mini"><?php echo htmlspecialchars((string)($user["DemoBalance"] ?? "0"), ENT_QUOTES, 'UTF-8'); ?> €</span></div>
         </div>
     </aside>
 
@@ -281,19 +283,16 @@ h1{font-size:16px;margin:0}
             </div>
 
             <div class="top-right-controls">
-                
-            
-            <div style="margin-top:12px; display:flex; gap:8px;">
-                <a href="logout.php" class="toggle" id="themeToggle" style="text-decoration:none;color:var(--text)">Kijelentkezés</a>
-                <a class="toggle" href="stats.php" style="text-decoration:none;color:var(--text);display:inline-block;">
-                    Statisztikák
-                <a class="toggle" href="transactions.php" style="text-decoration:none;color:var(--text);display:inline-block;">Tranzakció</a>
-                </a>
-                <a class="toggle" href="settings.php" style="text-decoration:none;color:var(--text)">Beállítások</a>
-                </a>
+                <div style="margin-top:12px; display:flex; gap:8px;">
+                    <a href="logout.php" class="toggle" id="themeToggle" style="text-decoration:none;color:var(--text)">Kijelentkezés</a>
+                    <a class="toggle" href="stats.php" style="text-decoration:none;color:var(--text);display:inline-block;">
+                        Statisztikák
+                    <a class="toggle" href="transactions.php" style="text-decoration:none;color:var(--text);display:inline-block;">Tranzakció</a>
+                    </a>
+                    <a class="toggle" href="settings.php" style="text-decoration:none;color:var(--text)">Beállítások</a>
+                    </a>
+                </div>
             </div>
-        </div>
-
         </div>
 
         <div style="margin-top:10px;">
@@ -313,25 +312,24 @@ h1{font-size:16px;margin:0}
 
             <button class="buy" id="buyBtn">VÉTEL</button>
 
-                <div id="spreadBox" style="
-                    min-width:140px;
-                    padding:8px 10px;
-                    border-radius:12px;
-                    background: rgba(255,255,255,0.05);
-                    border: 1px solid rgba(255,255,255,0.06);
-                    text-align:center;
-                    font-size:12px;
-                    line-height:1.2;
-                ">
-                    <div style="font-weight:700;">Spread: $0.05</div>
-                        <div style="color:var(--muted);">
-                        Vétel: <span id="bidVal">—</span> | Adás: <span id="askVal">—</span>
+            <div id="spreadBox" style="
+                min-width:140px;
+                padding:8px 10px;
+                border-radius:12px;
+                background: rgba(255,255,255,0.05);
+                border: 1px solid rgba(255,255,255,0.06);
+                text-align:center;
+                font-size:12px;
+                line-height:1.2;
+            ">
+                <div style="font-weight:700;">Spread: $0.05</div>
+                <div style="color:var(--muted);">
+                    Vétel: <span id="bidVal">—</span> | Adás: <span id="askVal">—</span>
                 </div>
             </div>
 
             <button class="sell" id="sellBtn">ELADÁS</button>
         </div>
-
 
         <div class="ratio-wrap">
             <div id="ratioLabel">Vevők: 50% • Eladók: 50%</div>
@@ -344,7 +342,7 @@ h1{font-size:16px;margin:0}
     <aside class="right">
         <div class="card">
             <div class="sub">Egyenleg</div>
-            <div class="balance" id="balance"><?php echo $user["DemoBalance"]; ?> €</div>
+            <div class="balance" id="balance"><?php echo htmlspecialchars((string)($user["DemoBalance"] ?? "0"), ENT_QUOTES, 'UTF-8'); ?> €</div>
         </div>
 
         <div class="card">
@@ -355,12 +353,9 @@ h1{font-size:16px;margin:0}
 </div>
 
 <script>
-
-
 const assets = <?php echo json_encode($assets, JSON_UNESCAPED_UNICODE); ?>;
 assets.forEach(a => { a.price = 0; });
-const prices = {}; 
-
+const prices = {};
 
 const SPREAD = 0.05;              // $ teljes spread
 const HALF_SPREAD = SPREAD / 2;   // 0.025
@@ -373,10 +368,9 @@ function getBidAsk(midPrice) {
   };
 }
 
-
 let selected  = assets[0];
 let positions = [];
-let balance   = <?php echo (float)$user["DemoBalance"]; ?>;
+let balance   = <?php echo (float)($user["DemoBalance"] ?? 0); ?>;
 
 // --- DOM ELEMEK ---
 
@@ -395,8 +389,6 @@ const sellBtn       = document.getElementById("sellBtn");
 const assetTitleEl  = document.getElementById("asset-title");
 const assetPriceEl  = document.getElementById("asset-price");
 
-// --- INSTRUMENT LISTA KIRAKÁSA ---
-
 const searchInput = document.getElementById("search");
 
 function renderInstruments(filter = "") {
@@ -413,26 +405,18 @@ function renderInstruments(filter = "") {
     list.forEach(a => {
         const d = document.createElement("div");
         d.className = "instrument";
-            d.innerHTML = `
-                <div class="instrument-main">
-                <div class="instrument-name">${a.name}</div>
-                <div class="instrument-symbol">${a.symbol}</div>
-                </div>
-                <div class="price" data-symbol="${a.symbol}">…</div>
-            `;
+        d.innerHTML = `
+            <div class="instrument-main">
+              <div class="instrument-name">${a.name}</div>
+              <div class="instrument-symbol">${a.symbol}</div>
+            </div>
+            <div class="price" data-symbol="${a.symbol}">…</div>
+        `;
         d.onclick = () => selectAsset(a);
         instContainer.appendChild(d);
 
         fetchPriceForSymbol(a.symbol);
     });
-}
-
-function getBidAsk(midPrice) {
-  const mid = Number(midPrice);
-  return {
-    bid: mid - HALF_SPREAD,
-    ask: mid + HALF_SPREAD
-  };
 }
 
 function updateSpreadUI() {
@@ -445,7 +429,6 @@ function updateSpreadUI() {
   bidVal.textContent = bid.toFixed(2) + " $";
   askVal.textContent = ask.toFixed(2) + " $";
 }
-
 
 // kereső esemény
 if (searchInput) {
@@ -462,7 +445,6 @@ function selectAsset(a) {
     fetchPriceForSymbol(a.symbol);
     updateSpreadUI();
 }
-
 
 function updateUI(){
     // Egyenleg
@@ -507,31 +489,30 @@ function updateUI(){
         item.innerHTML = `
             <div style="display:flex; justify-content:space-between; gap:10px; width:100%;">
                 <div>
-                <div style="font-weight:600;">${p.Symbol}</div>
-                <div style="font-size:11px;color:var(--muted);">${p.Name}</div>
+                  <div style="font-weight:600;">${p.Symbol}</div>
+                  <div style="font-size:11px;color:var(--muted);">${p.Name}</div>
 
-                <button type="button"
-                        style="margin-top:6px;padding:6px 10px;border-radius:10px;border:0;cursor:pointer; position:relative; z-index:5;"
-                        onclick="closeByAsset(${Number(p.AssetID)}, '${String(p.Symbol).replace(/'/g, "\\'")}')">
-                    Zárás
-                </button>
+                  <button type="button"
+                          style="margin-top:6px;padding:6px 10px;border-radius:10px;border:0;cursor:pointer; position:relative; z-index:5;"
+                          onclick="closeByAsset(${Number(p.AssetID)}, '${String(p.Symbol).replace(/'/g, "\\'")}')">
+                      Zárás
+                  </button>
                 </div>
 
                 <div style="text-align:right;">
-                <div>${qty.toFixed(2)} db</div>
-                <div style="font-size:11px;color:var(--muted);">@ ${entryPrice.toFixed(2)} €</div>
-                ${pnlHtml}
+                  <div>${qty.toFixed(2)} db</div>
+                  <div style="font-size:11px;color:var(--muted);">@ ${entryPrice.toFixed(2)} €</div>
+                  ${pnlHtml}
                 </div>
             </div>
-            `;
+        `;
 
         positionsEl.appendChild(item);
     });
 }
 
-
 function refreshState() {
-    fetch('get_state.php')
+    fetch('get_state.php', { cache: "no-store" })
         .then(r => r.json())
         .then(data => {
             if (data.error) {
@@ -550,7 +531,6 @@ function refreshState() {
         .catch(err => console.error(err));
 }
 
-
 buyBtn.onclick = () => {
     const q = parseInt(qtyInput.value);
     if (isNaN(q) || q <= 0) {
@@ -563,9 +543,9 @@ buyBtn.onclick = () => {
         headers: {'Content-Type':'application/x-www-form-urlencoded'},
         body: new URLSearchParams({
             symbol:     selected.symbol,
-            asset_name: selected.name,   
+            asset_name: selected.name,
             quantity:   q,
-            price: getBidAsk(selected.price).ask,
+            price:      getBidAsk(selected.price).ask,
             side:       'buy'
         })
     })
@@ -592,9 +572,9 @@ sellBtn.onclick = () => {
         headers: {'Content-Type':'application/x-www-form-urlencoded'},
         body: new URLSearchParams({
             symbol:     selected.symbol,
-            asset_name: selected.name,   // <<< EZ ÚJ
+            asset_name: selected.name,
             quantity:   q,
-            price: getBidAsk(selected.price).bid,
+            price:      getBidAsk(selected.price).bid,
             side:       'sell'
         })
     })
@@ -610,23 +590,20 @@ sellBtn.onclick = () => {
 };
 
 function fetchPriceForSymbol(symbol) {
-    fetch('get_price.php?symbol=' + encodeURIComponent(symbol))
+    fetch('get_price.php?symbol=' + encodeURIComponent(symbol), { cache: "no-store" })
         .then(r => r.json())
         .then(data => {
             if (!data) return;
             if (data.ok === false || data.error) {
-            console.warn("get_price hiba:", symbol, data);
-            return;
+                console.warn("get_price hiba:", symbol, data);
+                return;
             }
             if (data.price === undefined || data.price === null) return;
 
-
             const price = parseFloat(data.price);
 
-            // mentjük az aktuális árat a mapbe
             prices[symbol] = price;
 
-            // ha van assets tömbünk, oda is betoljuk
             const asset = assets.find(a => a.symbol === symbol);
             if (asset) {
                 asset.price = price;
@@ -644,25 +621,17 @@ function fetchPriceForSymbol(symbol) {
                 assetPriceEl.textContent = price.toFixed(2) + " $";
             }
 
-            // PnL-ek frissítése
             updateUI();
         })
         .catch(err => console.error(err));
 
-        updateSpreadUI();
-
+    updateSpreadUI();
 }
 
 async function fetchCurrentPrice(symbol) {
-  // Feltételezem, hogy a get_price.php így hívható: get_price.php?symbol=AAPL
   const res = await fetch(`get_price.php?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" });
   const data = await res.json();
-
-  // Alakítsd a saját get_price.php válaszodhoz:
-  // Ha pl. { ok:true, price: 255.53 } akkor:
   if (data && (data.price || data.price === 0)) return Number(data.price);
-
-  // Ha nálad más kulcsnév van, itt írd át.
   throw new Error("Nem sikerült árat lekérni záráshoz.");
 }
 
@@ -682,8 +651,6 @@ async function closePosition(positionId, symbol) {
       return;
     }
 
-    // frissítsd a portfólió/pozíció listát (ahogy nálad van)
-    // pl. loadOpenPositions(); vagy loadState(); stb.
     if (typeof loadOpenPositions === "function") loadOpenPositions();
     if (typeof loadState === "function") loadState();
 
@@ -694,14 +661,12 @@ async function closePosition(positionId, symbol) {
 
 async function closeByAsset(assetId, symbol) {
   try {
-    // 0) AssetID ellenőrzés
     const aId = Number(assetId);
     if (!aId || aId <= 0) {
       alert("Hibás AssetID (nincs benne a get_state válaszban).");
       return;
     }
 
-    // 1) Mid ár a memóriából (prices map) – ha nincs, kérünk egyet
     let midPrice = Number(prices[symbol] || 0);
 
     if (!midPrice || midPrice <= 0) {
@@ -714,7 +679,6 @@ async function closeByAsset(assetId, symbol) {
       return;
     }
 
-    // 2) Backend hívás (midPrice -> backend számolja bid/ask-ot)
     const res = await fetch('close_position_by_asset.php', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -728,7 +692,6 @@ async function closeByAsset(assetId, symbol) {
       return;
     }
 
-    // 3) UI frissítés
     refreshState();
 
   } catch (e) {
@@ -738,21 +701,16 @@ async function closeByAsset(assetId, symbol) {
 window.closeByAsset = closeByAsset;
 
 
-
-
-
-// --- KEZDŐ FUTTATÁS ---
-
 renderInstruments();
-selectAsset(assets[0]);
 
-// első betöltés
+if (assets && assets.length > 0) {
+    selectAsset(assets[0]);
+}
+
 refreshState();
 
-// pár másodpercenként frissítse automatikusan:
 setInterval(refreshState, 2000);
 </script>
-
 
 </body>
 </html>

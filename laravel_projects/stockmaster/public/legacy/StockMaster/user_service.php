@@ -1,8 +1,15 @@
 <?php
-require_once __DIR__ . "/_bootstrap.php";
+declare(strict_types=1);
 
-function getUser(int $id): ?array {
-    global $conn;
+require_once __DIR__ . '/_bootstrap.php';
+
+function getUser(int $id): ?array
+{
+    if ($id <= 0) {
+        return null;
+    }
+
+    $conn = legacy_db();
 
     $stmt = $conn->prepare("
         SELECT 
@@ -22,8 +29,18 @@ function getUser(int $id): ?array {
         WHERE u.ID = ?
         LIMIT 1
     ");
-    $stmt->bind_param("i", $id);
-    $stmt->execute();
+
+    if (!$stmt) {
+        return null;
+    }
+
+    $stmt->bind_param('i', $id);
+
+    if (!$stmt->execute()) {
+        $stmt->close();
+        return null;
+    }
+
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
 

@@ -2,76 +2,82 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/_bootstrap.php';
-require_once __DIR__ . '/auth.php';
-require_once __DIR__ . 'user_service.php';
-
-header('Content-Type: application/json; charset=utf-8');
-header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+require_once __DIR__ . '/user_service.php';
 
 requireLogin();
 
+$conn   = legacy_db();
 $userId = currentUserId();
-$user = getUser($userId);
+$user   = getUser($userId);
 
-if ($userId <= 0) { header("Location: login.php"); exit; }
+if ($userId <= 0) {
+    legacy_redirect('login.php');
+}
 
 // --- usersettings defaultok ---
 $settings = [
-  "AutoLogin" => 0,
-  "ReceiveNotifications" => 1,
-  "PreferredChartTheme" => "dark",
-  "PreferredChartInterval" => "1m",
+  'AutoLogin' => 0,
+  'ReceiveNotifications' => 1,
+  'PreferredChartTheme' => 'dark',
+  'PreferredChartInterval' => '1m',
 
   // ÚJ: limitek (default)
-  "NewsLimit" => 8,                 // general mód max
-  "NewsPerSymbolLimit" => 3,         // portfolio módban ticker-enként
-  "NewsPortfolioTotalLimit" => 20,   // portfolio módban összesen
-  "CalendarLimit" => 8,              // naptár max
+  'NewsLimit' => 8,                 // general mód max
+  'NewsPerSymbolLimit' => 3,         // portfolio módban ticker-enként
+  'NewsPortfolioTotalLimit' => 20,   // portfolio módban összesen
+  'CalendarLimit' => 8,              // naptár max
 ];
 
-// --- usersettings betöltése (ha nincs oszlop még, akkor fallback: csak a régi mezők) ---
-$stmt = @$conn->prepare("SELECT
-  AutoLogin, ReceiveNotifications, PreferredChartTheme, PreferredChartInterval,
-  NewsLimit, NewsPerSymbolLimit, NewsPortfolioTotalLimit, CalendarLimit
-  FROM usersettings WHERE UserID = ? LIMIT 1"
-);
+$stmt = @$conn->prepare("
+    SELECT
+      AutoLogin, ReceiveNotifications, PreferredChartTheme, PreferredChartInterval,
+      NewsLimit, NewsPerSymbolLimit, NewsPortfolioTotalLimit, CalendarLimit
+    FROM usersettings
+    WHERE UserID = ?
+    LIMIT 1
+");
 
 if ($stmt) {
-  $stmt->bind_param("i", $userId);
-  $stmt->execute();
-  $res = $stmt->get_result();
-  if ($row = $res->fetch_assoc()) {
-    $settings["AutoLogin"] = (int)($row["AutoLogin"] ?? 0);
-    $settings["ReceiveNotifications"] = (int)($row["ReceiveNotifications"] ?? 1);
-    $settings["PreferredChartTheme"] = (string)($row["PreferredChartTheme"] ?? "dark");
-    $settings["PreferredChartInterval"] = (string)($row["PreferredChartInterval"] ?? "1m");
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    if ($row = $res->fetch_assoc()) {
+        $settings['AutoLogin'] = (int)($row['AutoLogin'] ?? 0);
+        $settings['ReceiveNotifications'] = (int)($row['ReceiveNotifications'] ?? 1);
+        $settings['PreferredChartTheme'] = (string)($row['PreferredChartTheme'] ?? 'dark');
+        $settings['PreferredChartInterval'] = (string)($row['PreferredChartInterval'] ?? '1m');
 
-    $settings["NewsLimit"] = (int)($row["NewsLimit"] ?? $settings["NewsLimit"]);
-    $settings["NewsPerSymbolLimit"] = (int)($row["NewsPerSymbolLimit"] ?? $settings["NewsPerSymbolLimit"]);
-    $settings["NewsPortfolioTotalLimit"] = (int)($row["NewsPortfolioTotalLimit"] ?? $settings["NewsPortfolioTotalLimit"]);
-    $settings["CalendarLimit"] = (int)($row["CalendarLimit"] ?? $settings["CalendarLimit"]);
-  }
-  $stmt->close();
+        $settings['NewsLimit'] = (int)($row['NewsLimit'] ?? $settings['NewsLimit']);
+        $settings['NewsPerSymbolLimit'] = (int)($row['NewsPerSymbolLimit'] ?? $settings['NewsPerSymbolLimit']);
+        $settings['NewsPortfolioTotalLimit'] = (int)($row['NewsPortfolioTotalLimit'] ?? $settings['NewsPortfolioTotalLimit']);
+        $settings['CalendarLimit'] = (int)($row['CalendarLimit'] ?? $settings['CalendarLimit']);
+    }
+    $stmt->close();
 } else {
-  // fallback (régi oszlopok)
-  $stmt2 = $conn->prepare("SELECT AutoLogin, ReceiveNotifications, PreferredChartTheme, PreferredChartInterval FROM usersettings WHERE UserID = ? LIMIT 1");
-  $stmt2->bind_param("i", $userId);
-  $stmt2->execute();
-  $res2 = $stmt2->get_result();
-  if ($row = $res2->fetch_assoc()) {
-    $settings["AutoLogin"] = (int)($row["AutoLogin"] ?? 0);
-    $settings["ReceiveNotifications"] = (int)($row["ReceiveNotifications"] ?? 1);
-    $settings["PreferredChartTheme"] = (string)($row["PreferredChartTheme"] ?? "dark");
-    $settings["PreferredChartInterval"] = (string)($row["PreferredChartInterval"] ?? "1m");
-  }
-  $stmt2->close();
+    // fallback (régi oszlopok)
+    $stmt2 = $conn->prepare("
+        SELECT AutoLogin, ReceiveNotifications, PreferredChartTheme, PreferredChartInterval
+        FROM usersettings
+        WHERE UserID = ?
+        LIMIT 1
+    ");
+    $stmt2->bind_param('i', $userId);
+    $stmt2->execute();
+    $res2 = $stmt2->get_result();
+    if ($row = $res2->fetch_assoc()) {
+        $settings['AutoLogin'] = (int)($row['AutoLogin'] ?? 0);
+        $settings['ReceiveNotifications'] = (int)($row['ReceiveNotifications'] ?? 1);
+        $settings['PreferredChartTheme'] = (string)($row['PreferredChartTheme'] ?? 'dark');
+        $settings['PreferredChartInterval'] = (string)($row['PreferredChartInterval'] ?? '1m');
+    }
+    $stmt2->close();
 }
 
 // clamp (biztonság)
-$settings["NewsLimit"] = max(3, min(30, (int)$settings["NewsLimit"]));
-$settings["NewsPerSymbolLimit"] = max(1, min(10, (int)$settings["NewsPerSymbolLimit"]));
-$settings["NewsPortfolioTotalLimit"] = max(5, min(60, (int)$settings["NewsPortfolioTotalLimit"]));
-$settings["CalendarLimit"] = max(3, min(60, (int)$settings["CalendarLimit"]));
+$settings['NewsLimit'] = max(3, min(30, (int)$settings['NewsLimit']));
+$settings['NewsPerSymbolLimit'] = max(1, min(10, (int)$settings['NewsPerSymbolLimit']));
+$settings['NewsPortfolioTotalLimit'] = max(5, min(60, (int)$settings['NewsPortfolioTotalLimit']));
+$settings['CalendarLimit'] = max(3, min(60, (int)$settings['CalendarLimit']));
 
 // --- portfólió tickerek (nyitott pozik) a hírek szűréshez ---
 $tickers = [];
@@ -83,13 +89,15 @@ $q = $conn->prepare("
   ORDER BY a.Symbol
   LIMIT 30
 ");
-$q->bind_param("i", $userId);
+$q->bind_param('i', $userId);
 $q->execute();
 $r = $q->get_result();
-while ($rr = $r->fetch_assoc()) $tickers[] = $rr["Symbol"];
+while ($rr = $r->fetch_assoc()) {
+    $tickers[] = (string)$rr['Symbol'];
+}
 $q->close();
 
-$tickerStr = implode(", ", $tickers);
+$tickerStr = implode(', ', $tickers);
 ?>
 <!DOCTYPE html>
 <html lang="hu">
@@ -356,7 +364,7 @@ html,body{
   <div class="topbar">
     <div>
       <h1 class="h1">Beállítások</h1>
-      <div class="sub">Mentés a <strong>usersettings</strong> táblába</div>
+      <div class="sub"><strong></strong></div>
     </div>
     <a class="back" href="index.php">← Vissza a főoldalra</a>
   </div>
@@ -382,7 +390,7 @@ html,body{
                 <?php
                   $opts = [6,8,10,15,20,30,60];
                   foreach ($opts as $v) {
-                    $sel = ((int)$settings["CalendarLimit"] === $v) ? "selected" : "";
+                    $sel = ((int)$settings['CalendarLimit'] === $v) ? 'selected' : '';
                     echo "<option value=\"{$v}\" {$sel}>{$v}</option>";
                   }
                 ?>
@@ -398,12 +406,12 @@ html,body{
       </div>
     </div>
 
-    <!-- ✅ NEWS (jobb) -->
+    <!-- NEWS (jobb) -->
     <div class="card">
       <div class="cardHead">
         <div>
           <div class="cardTitle">Piaci hírek</div>
-          <div class="cardMeta">Portfólió tickerek: <span class="ok"><?php echo htmlspecialchars($tickerStr ?: "—"); ?></span></div>
+          <div class="cardMeta">Portfólió tickerek: <span class="ok"><?php echo htmlspecialchars($tickerStr ?: '—', ENT_QUOTES, 'UTF-8'); ?></span></div>
         </div>
 
         <div class="tabs">
@@ -417,9 +425,7 @@ html,body{
                 <?php
                   $opts = [6,8,10,15,20,30,60];
                   foreach ($opts as $v) {
-                    // general módban NewsLimit, portfolio módban NewsPortfolioTotalLimit
-                    // UI induljon portfolio értékkel, mert az az alap mód
-                    $sel = ((int)$settings["NewsPortfolioTotalLimit"] === $v) ? "selected" : "";
+                    $sel = ((int)$settings['NewsPortfolioTotalLimit'] === $v) ? 'selected' : '';
                     echo "<option value=\"{$v}\" {$sel}>{$v}</option>";
                   }
                 ?>
@@ -434,7 +440,7 @@ html,body{
                 <?php
                   $opts = [1,2,3,4,5,6,8,10];
                   foreach ($opts as $v) {
-                    $sel = ((int)$settings["NewsPerSymbolLimit"] === $v) ? "selected" : "";
+                    $sel = ((int)$settings['NewsPerSymbolLimit'] === $v) ? 'selected' : '';
                     echo "<option value=\"{$v}\" {$sel}>{$v}</option>";
                   }
                 ?>
@@ -510,7 +516,7 @@ async function loadNews(){
     const url = new URL("get_market_news.php", window.location.href);
     url.searchParams.set("mode", newsMode);
 
-    // ✅ backend paraméterezés
+    //backend paraméterezés
     url.searchParams.set("limit", String(want));
     url.searchParams.set("perSymbol", String(perSymbol));
 
@@ -559,8 +565,6 @@ newsModePortfolio.onclick = () => {
   newsMode = "portfolio";
   newsModePortfolio.classList.add("active");
   newsModeGeneral.classList.remove("active");
-
-  // portfolio módban jellemzően több elem kell → hagyjuk a mostani értéket
   loadNews();
 };
 
@@ -627,8 +631,6 @@ async function loadCalendar(){
     const want = parseInt(calLimitSel.value || "8", 10);
 
     const url = new URL("get_market_calendar.php", window.location.href);
-
-    // ✅ backend paraméterezés
     url.searchParams.set("limit", String(want));
 
     const r = await fetch(url.toString(), { cache:"no-store" });
@@ -664,19 +666,18 @@ saveBtn.onclick = async () => {
   saveToast.textContent = "Mentés…";
   try{
     const payload = {
-      AutoLogin: <?php echo (int)$settings["AutoLogin"]; ?>,
-      ReceiveNotifications: <?php echo (int)$settings["ReceiveNotifications"]; ?>,
-      PreferredChartTheme: <?php echo json_encode($settings["PreferredChartTheme"]); ?>,
-      PreferredChartInterval: <?php echo json_encode($settings["PreferredChartInterval"]); ?>,
+      AutoLogin: <?php echo (int)$settings['AutoLogin']; ?>,
+      ReceiveNotifications: <?php echo (int)$settings['ReceiveNotifications']; ?>,
+      PreferredChartTheme: <?php echo json_encode($settings['PreferredChartTheme']); ?>,
+      PreferredChartInterval: <?php echo json_encode($settings['PreferredChartInterval']); ?>,
 
-      // ✅ ÚJ: limitek mentése usersettingsbe
-      NewsLimit: <?php echo (int)$settings["NewsLimit"]; ?>, // general alap
+      // ✅ limitek mentése usersettingsbe
+      NewsLimit: <?php echo (int)$settings['NewsLimit']; ?>,
       NewsPerSymbolLimit: parseInt(newsPerSymbolSel.value || "3", 10),
       NewsPortfolioTotalLimit: parseInt(newsLimitSel.value || "20", 10),
       CalendarLimit: parseInt(calLimitSel.value || "8", 10)
     };
 
-    // Ha general módban vagy, akkor a "Látszódjon" érték legyen a NewsLimit (general)
     if (newsMode === "general") {
       payload.NewsLimit = parseInt(newsLimitSel.value || "8", 10);
     }
@@ -693,7 +694,6 @@ saveBtn.onclick = async () => {
       return;
     }
 
-    // ha backend warningot küld (pl. hiányzó oszlopok), azt is jelezzük
     if (data.warning) {
       saveToast.textContent = "Mentve, de: " + data.warning;
       setTimeout(()=> saveToast.textContent="", 4200);

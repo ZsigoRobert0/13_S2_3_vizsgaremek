@@ -1,5 +1,7 @@
 <?php
-session_start();
+declare(strict_types=1);
+
+require_once __DIR__ . '/_bootstrap.php';
 ?>
 
 <!DOCTYPE html>
@@ -17,22 +19,22 @@ session_start();
 
     <div class="login-wrapper">
 
-            <div class="register-card">
-                <div class="logo">StockMaster</div>
-                <h2 class="register-title">Regisztráció</h2>
+        <div class="register-card">
+            <div class="logo">StockMaster</div>
+            <h2 class="register-title">Regisztráció</h2>
 
             <!-- PHP hiba kiírás -->
-            <?php if (isset($_SESSION["error"])): ?>
+            <?php if (!empty($_SESSION['error'])): ?>
                 <div class="alert error">
-                    <?php 
-                        echo htmlspecialchars($_SESSION["error"]); 
-                        unset($_SESSION["error"]); 
+                    <?php
+                        echo htmlspecialchars((string)$_SESSION['error'], ENT_QUOTES, 'UTF-8');
+                        unset($_SESSION['error']);
                     ?>
                 </div>
             <?php endif; ?>
 
             <!-- Regisztrációs űrlap -->
-            <form action="process_register.php" method="POST" class="login-form">
+            <form action="register_action.php" method="POST" class="login-form" id="registerForm">
 
                 <div class="form-group">
                     <label for="username">Felhasználónév</label>
@@ -59,15 +61,32 @@ session_start();
                     <a href="login.php" class="register-link">Van már fiókod?</a>
                 </div>
 
-
             </form>
         </div>
 
         <div class="register-footer">
-             © <?php echo date("Y"); ?> StockMaster • Portfóliókezelő
+            © <?php echo date('Y'); ?> StockMaster • Portfóliókezelő
         </div>
 
     </div>
+
+<script>
+
+document.getElementById('registerForm').addEventListener('submit', function(e) {
+    const p1 = document.getElementById('password').value;
+    const p2 = document.getElementById('password2').value;
+
+    if (p1 !== p2) {
+        e.preventDefault();
+        alert("A két jelszó nem egyezik!");
+    }
+
+    if (p1.length < 6) {
+        e.preventDefault();
+        alert("A jelszónak legalább 6 karakter hosszúnak kell lennie!");
+    }
+});
+</script>
 
 </body>
 </html>
