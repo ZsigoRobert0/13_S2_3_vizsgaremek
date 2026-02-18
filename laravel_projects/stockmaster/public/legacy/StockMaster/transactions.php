@@ -1,8 +1,14 @@
 <?php
-require_once "auth.php";
+declare(strict_types=1);
+
+require_once __DIR__ . '/_bootstrap.php';
+require_once __DIR__ . '/auth.php';
+require_once __DIR__ . 'user_service.php';
+
+header('Content-Type: application/json; charset=utf-8');
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+
 requireLogin();
-require_once "db.php";
-require_once "user_service.php";
 
 $userId = currentUserId();
 $user = getUser($userId);

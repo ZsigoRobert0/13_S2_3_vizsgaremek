@@ -1,10 +1,13 @@
 <?php
-require_once __DIR__ . "/session.php";
-require_once __DIR__ . "/auth.php";
-requireLogin();
-require_once __DIR__ . "/db.php";
+declare(strict_types=1);
 
-header("Content-Type: application/json; charset=utf-8");
+require_once __DIR__ . '/_bootstrap.php';
+require_once __DIR__ . '/auth.php';
+
+header('Content-Type: application/json; charset=utf-8');
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+
+requireLogin();
 
 $userId = (int)($_SESSION["user_id"] ?? 0);
 

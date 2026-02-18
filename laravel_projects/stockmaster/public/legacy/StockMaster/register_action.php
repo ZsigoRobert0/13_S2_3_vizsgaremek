@@ -1,13 +1,17 @@
 <?php
-require_once __DIR__ . "/db.php";
-require_once __DIR__ . "/session.php";
+require_once __DIR__ . '/_bootstrap.php';
 
-header("Location: login.php");
+$username = trim($_POST['username'] ?? '');
+$email    = trim($_POST['email'] ?? '');
+$plainPwd = $_POST['password'] ?? '';
 
+if ($username === '' || $email === '' || $plainPwd === '') {
+    $_SESSION['error'] = 'Hiányzó mezők!';
+    header('Location: register.php');
+    exit;
+}
 
-$username = trim($_POST["username"]);
-$email    = trim($_POST["email"]);
-$pass     = password_hash($_POST["password"], PASSWORD_BCRYPT);
+$pass = password_hash($plainPwd, PASSWORD_BCRYPT);
 
 // check if username OR email exists
 $stmt = $conn->prepare("SELECT ID FROM Users WHERE Username=? OR Email=?");
@@ -17,14 +21,14 @@ $stmt->store_result();
 
 if ($stmt->num_rows > 0) {
     $_SESSION["error"] = "A felhasználónév vagy email már foglalt!";
-    header("Location: ../StockMaster/register.php");
+    header("Location: register.php");
     exit;
 }
 
 // insert user
 $stmt = $conn->prepare("
-INSERT INTO Users (Username, Email, PasswordHash, RegistrationDate, DemoBalance, RealBalance)
-VALUES (?, ?, ?, NOW(), 10000, 0)
+    INSERT INTO Users (Username, Email, PasswordHash, RegistrationDate, DemoBalance, RealBalance)
+    VALUES (?, ?, ?, NOW(), 10000, 0)
 ");
 $stmt->bind_param("sss", $username, $email, $pass);
 
@@ -33,15 +37,16 @@ if ($stmt->execute()) {
 
     // default settings
     $stmt2 = $conn->prepare("
-    INSERT INTO UserSettings (UserID, AutoLogin, ReceiveNotifications, PreferredChartInterval, ChartTheme)
-    VALUES (?, 0, 1, '1h', 'dark')
+        INSERT INTO UserSettings (UserID, AutoLogin, ReceiveNotifications, PreferredChartInterval, ChartTheme)
+        VALUES (?, 0, 1, '1h', 'dark')
     ");
     $stmt2->bind_param("i", $newID);
     $stmt2->execute();
 
-    header("Location: ../public/login.php");
-} else {
-    $_SESSION["error"] = "Hiba történt!";
-    header("Location: ../public/register.php");
+    header("Location: login.php");
+    exit;
 }
-?>
+
+$_SESSION["error"] = "Hiba történt!";
+header("Location: register.php");
+exit;

@@ -1,8 +1,9 @@
 <?php
-require_once "auth.php";
+require_once __DIR__ . '_bootstrap.php';
+require_once __DIR__ . 'auth.php';
 requireLogin();
-require_once "db.php";
-require_once "user_service.php";
+require_once __DIR__ . 'user_service.php';
+
 
 $userId = currentUserId();
 $user = getUser($userId);

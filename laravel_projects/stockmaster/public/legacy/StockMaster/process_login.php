@@ -1,6 +1,6 @@
 <?php
 session_start();
-require "db.php";
+require __DIR__ . 'db.php';
 
 $username = $_POST["username"];
 $password = $_POST["password"];

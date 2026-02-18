@@ -1,60 +1,70 @@
 <?php
-require_once "auth.php";
-require_once "db.php";
+declare(strict_types=1);
 
-header("Content-Type: application/json; charset=utf-8");
+require_once __DIR__ . '/_bootstrap.php';
 
-// Bejelentkezett user
-$userId = (int)($_SESSION["UserID"] ?? $_SESSION["user_id"] ?? 0);
-if ($userId <= 0) {
-  echo json_encode(["ok" => false, "error" => "Nincs bejelentkezve"]);
-  exit;
+if (!isLoggedIn()) {
+    legacy_json(['ok' => false, 'error' => 'Nincs bejelentkezve'], 401);
 }
 
-// User settings: ReceiveNotifications (ha nálad nincs, akkor ez a blokk kihagyható)
-$receive = 1;
+$conn = legacy_db();
+$userId = currentUserId();
+
+$receive = 1; // default: engedélyezett
+
 $stmt = $conn->prepare("SELECT ReceiveNotifications FROM usersettings WHERE UserID = ? LIMIT 1");
-$stmt->bind_param("i", $userId);
-$stmt->execute();
-$res = $stmt->get_result();
-if ($row = $res->fetch_assoc()) {
-  $receive = (int)$row["ReceiveNotifications"];
+if ($stmt) {
+    $stmt->bind_param('i', $userId);
+
+    if ($stmt->execute()) {
+        $res = $stmt->get_result();
+        if ($res && ($row = $res->fetch_assoc())) {
+            $receive = (int)($row['ReceiveNotifications'] ?? 1);
+        }
+    }
+
+    $stmt->close();
 }
-$stmt->close();
 
 if ($receive !== 1) {
-  echo json_encode(["ok" => false, "error" => "Értesítések kikapcsolva"]);
-  exit;
+    legacy_json(['ok' => false, 'error' => 'Értesítések kikapcsolva'], 403);
 }
 
-// Input (POST JSON vagy form POST is ok)
-$raw = file_get_contents("php://input");
+$raw = file_get_contents('php://input');
 $data = json_decode($raw, true);
+if (!is_array($data)) {
+    $data = [];
+}
 
-$title = trim(($data["title"] ?? $_POST["title"] ?? "") . "");
-$message = trim(($data["message"] ?? $_POST["message"] ?? "") . "");
+$title   = trim((string)($data['title']   ?? ($_POST['title']   ?? '')));
+$message = trim((string)($data['message'] ?? ($_POST['message'] ?? '')));
 
-if ($title === "" || $message === "") {
-  echo json_encode(["ok" => false, "error" => "Hiányzó title/message"]);
-  exit;
+if ($title === '' || $message === '') {
+    legacy_json(['ok' => false, 'error' => 'Hiányzó title/message'], 400);
 }
 
 // Max hosszak (biztonság)
-if (mb_strlen($title) > 255) $title = mb_substr($title, 0, 255);
+if (mb_strlen($title) > 255)   $title = mb_substr($title, 0, 255);
 if (mb_strlen($message) > 2000) $message = mb_substr($message, 0, 2000);
 
-try {
-  $stmt = $conn->prepare("
+$stmt = $conn->prepare("
     INSERT INTO notifications (UserID, Title, Message, CreatedAt, IsRead)
     VALUES (?, ?, ?, NOW(), 0)
-  ");
-  $stmt->bind_param("iss", $userId, $title, $message);
-  $stmt->execute();
-  $newId = $stmt->insert_id;
-  $stmt->close();
+");
 
-  echo json_encode(["ok" => true, "id" => (int)$newId]);
-
-} catch (Exception $e) {
-  echo json_encode(["ok" => false, "error" => "DB hiba"]);
+if (!$stmt) {
+    legacy_json(['ok' => false, 'error' => 'Prepare failed: ' . $conn->error], 500);
 }
+
+$stmt->bind_param('iss', $userId, $title, $message);
+
+if (!$stmt->execute()) {
+    $err = $stmt->error;
+    $stmt->close();
+    legacy_json(['ok' => false, 'error' => 'DB hiba: ' . $err], 500);
+}
+
+$newId = (int)$stmt->insert_id;
+$stmt->close();
+
+legacy_json(['ok' => true, 'id' => $newId], 201);

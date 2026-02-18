@@ -1,7 +1,6 @@
 <?php
-require_once __DIR__ . "/session.php";
-require_once __DIR__ . "/db.php";
-require_once __DIR__ . "/finnhub_http.php";
+require_once __DIR__ .'_bootstrap.php';
+require_once __DIR__ . '/finnhub_http.php';
 
 header("Content-Type: application/json; charset=utf-8");
 

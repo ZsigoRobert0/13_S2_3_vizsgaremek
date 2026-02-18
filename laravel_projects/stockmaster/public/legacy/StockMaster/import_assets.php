@@ -1,5 +1,5 @@
 <?php
-require "db.php";
+require __DIR__ . '_bootstrap.php';
 
 set_time_limit(120);
 ini_set('memory_limit', '512M');

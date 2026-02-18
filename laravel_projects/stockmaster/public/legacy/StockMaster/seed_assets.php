@@ -1,6 +1,6 @@
 <?php
 // seed_assets.php
-require "db.php";
+require __DIR__ . '_bootstrap.php';
 
 // Növeljük egy kicsit a limitet, ha sokat szúrunk
 set_time_limit(60);

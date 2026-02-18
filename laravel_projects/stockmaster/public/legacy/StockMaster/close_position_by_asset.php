@@ -1,30 +1,25 @@
 <?php
 declare(strict_types=1);
 
-header('Content-Type: application/json; charset=utf-8');
-header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+require_once __DIR__ . '/_bootstrap.php';
 
-require_once "auth.php";
-requireLogin();
-require "db.php";
+legacy_require_login_api();
 
-$userId = (int)($_SESSION["user_id"] ?? 0);
-if ($userId <= 0) {
-  http_response_code(401);
-  echo json_encode(["ok" => false, "error" => "Nincs bejelentkezve."]);
-  exit;
-}
+$conn = legacy_db();
+$userId = currentUserId();
 
-$raw = file_get_contents("php://input");
+$raw = file_get_contents('php://input');
 $data = json_decode($raw, true);
 
-$assetId  = (int)($data["assetId"] ?? 0);
-$midPrice = (float)($data["midPrice"] ?? 0);
+if (!is_array($data)) {
+    legacy_json(['ok' => false, 'error' => 'Érvénytelen JSON body.'], 400);
+}
+
+$assetId  = (int)($data['assetId'] ?? 0);
+$midPrice = (float)($data['midPrice'] ?? 0);
 
 if ($assetId <= 0 || $midPrice <= 0) {
-  http_response_code(400);
-  echo json_encode(["ok" => false, "error" => "Hibás assetId vagy midPrice."]);
-  exit;
+    legacy_json(['ok' => false, 'error' => 'Hibás assetId vagy midPrice.'], 400);
 }
 
 // FIX spread ($)
@@ -34,119 +29,131 @@ $half   = $spread / 2.0;
 $bid = $midPrice - $half;
 $ask = $midPrice + $half;
 
-// extra védelem
 if ($bid <= 0 || $ask <= 0) {
-  http_response_code(400);
-  echo json_encode(["ok" => false, "error" => "Érvénytelen bid/ask ár."]);
-  exit;
+    legacy_json(['ok' => false, 'error' => 'Érvénytelen bid/ask ár.'], 400);
 }
 
-// 1) Lekérjük az összes NYITOTT pozíció sort
 $stmt = $conn->prepare("
-  SELECT ID, Quantity, EntryPrice, PositionType
-  FROM positions
-  WHERE UserID = ? AND AssetID = ? AND IsOpen = 1
-  ORDER BY ID ASC
+    SELECT ID, Quantity, EntryPrice, PositionType
+    FROM positions
+    WHERE UserID = ? AND AssetID = ? AND IsOpen = 1
+    ORDER BY ID ASC
 ");
-$stmt->bind_param("ii", $userId, $assetId);
-$stmt->execute();
-$stmt->bind_result($id, $qty, $entry, $type);
 
-$rows = [];
-while ($stmt->fetch()) {
-  $rows[] = [
-    "ID" => (int)$id,
-    "Quantity" => (float)$qty,
-    "EntryPrice" => (float)$entry,
-    "PositionType" => (string)$type
-  ];
+if (!$stmt) {
+    legacy_json(['ok' => false, 'error' => 'Prepare failed: ' . $conn->error], 500);
 }
+
+$stmt->bind_param('ii', $userId, $assetId);
+
+if (!$stmt->execute()) {
+    $stmt->close();
+    legacy_json(['ok' => false, 'error' => 'Execute failed: ' . $stmt->error], 500);
+}
+
+$res = $stmt->get_result();
+$rows = $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
 $stmt->close();
 
 if (count($rows) === 0) {
-  http_response_code(404);
-  echo json_encode(["ok" => false, "error" => "Nincs nyitott pozíció ehhez a termékhez."]);
-  exit;
+    legacy_json(['ok' => false, 'error' => 'Nincs nyitott pozíció ehhez a termékhez.'], 404);
 }
 
 // 2) Transaction
 $conn->begin_transaction();
 
 try {
-  $update = $conn->prepare("
-    UPDATE positions
-    SET CloseTime = NOW(),
-        ExitPrice = ?,
-        ProfitLoss = ?,
-        IsOpen = 0
-    WHERE ID = ? AND UserID = ? AND IsOpen = 1
-  ");
+    $update = $conn->prepare("
+        UPDATE positions
+        SET CloseTime = NOW(),
+            ExitPrice = ?,
+            ProfitLoss = ?,
+            IsOpen = 0
+        WHERE ID = ? AND UserID = ? AND IsOpen = 1
+    ");
 
-  $totalPnl = 0.0;
-  $totalCashDelta = 0.0;
-  $closedCount = 0;
-
-  foreach ($rows as $pos) {
-    $positionId = (int)$pos["ID"];
-    $q   = (float)$pos["Quantity"];
-    $en  = (float)$pos["EntryPrice"];
-    $pt  = strtolower(trim((string)$pos["PositionType"])); // buy / sell
-
-    if ($q <= 0 || $en <= 0) continue;
-
-    // ZÁRÓÁR spread szerint:
-    // buy zárás = eladás BID-en
-    // sell zárás = visszavétel ASK-on
-    if ($pt === "buy") {
-      $closePrice = $bid;
-      $pnl = ($closePrice - $en) * $q;
-      $cashDelta = $closePrice * $q;        // eladás -> pénz be
-    } elseif ($pt === "sell") {
-      $closePrice = $ask;
-      $pnl = ($en - $closePrice) * $q;
-      $cashDelta = -($closePrice * $q);     // visszavétel -> pénz ki
-    } else {
-      continue;
+    if (!$update) {
+        throw new RuntimeException('Prepare update failed: ' . $conn->error);
     }
 
-    $update->bind_param("ddii", $closePrice, $pnl, $positionId, $userId);
-    $update->execute();
+    $totalPnl = 0.0;
+    $totalCashDelta = 0.0;
+    $closedCount = 0;
 
-    if ($update->affected_rows > 0) {
-      $totalPnl += $pnl;
-      $totalCashDelta += $cashDelta;
-      $closedCount++;
+    foreach ($rows as $pos) {
+        $positionId = (int)($pos['ID'] ?? 0);
+        $q   = (float)($pos['Quantity'] ?? 0);
+        $en  = (float)($pos['EntryPrice'] ?? 0);
+        $pt  = strtolower(trim((string)($pos['PositionType'] ?? ''))); // buy / sell
+
+        if ($positionId <= 0 || $q <= 0 || $en <= 0) {
+            continue;
+        }
+
+        // ZÁRÓÁR spread szerint:
+        // buy zárás = eladás BID-en
+        // sell zárás = visszavétel ASK-on
+        if ($pt === 'buy') {
+            $closePrice = $bid;
+            $pnl = ($closePrice - $en) * $q;
+            $cashDelta = $closePrice * $q;        // eladás -> pénz be
+        } elseif ($pt === 'sell') {
+            $closePrice = $ask;
+            $pnl = ($en - $closePrice) * $q;
+            $cashDelta = -($closePrice * $q);     // visszavétel -> pénz ki
+        } else {
+            continue;
+        }
+
+        $update->bind_param('ddii', $closePrice, $pnl, $positionId, $userId);
+
+        if (!$update->execute()) {
+            throw new RuntimeException('Update execute failed: ' . $update->error);
+        }
+
+        if ($update->affected_rows > 0) {
+            $totalPnl += $pnl;
+            $totalCashDelta += $cashDelta;
+            $closedCount++;
+        }
     }
-  }
 
-  if ($closedCount <= 0) {
-    $conn->rollback();
-    http_response_code(409);
-    echo json_encode(["ok" => false, "error" => "Nem volt lezárható nyitott pozíció."]);
-    exit;
-  }
+    $update->close();
 
-  // 3) Egyenleg frissítése CASHFLOW-val (mert nyitáskor már könyveltél)
-  $updBal = $conn->prepare("UPDATE users SET DemoBalance = DemoBalance + ? WHERE ID = ?");
-  $updBal->bind_param("di", $totalCashDelta, $userId);
-  $updBal->execute();
+    if ($closedCount <= 0) {
+        $conn->rollback();
+        legacy_json(['ok' => false, 'error' => 'Nem volt lezárható nyitott pozíció.'], 409);
+    }
 
-  $conn->commit();
+    $updBal = $conn->prepare("UPDATE users SET DemoBalance = DemoBalance + ? WHERE ID = ?");
 
-  echo json_encode([
-    "ok" => true,
-    "assetId" => $assetId,
-    "midPrice" => $midPrice,
-    "bid" => $bid,
-    "ask" => $ask,
-    "closedCount" => $closedCount,
-    "totalProfitLoss" => $totalPnl,
-    "balanceDelta" => $totalCashDelta,
-    "spread" => $spread
-  ]);
+    if (!$updBal) {
+        throw new RuntimeException('Prepare balance update failed: ' . $conn->error);
+    }
+
+    $updBal->bind_param('di', $totalCashDelta, $userId);
+
+    if (!$updBal->execute()) {
+        throw new RuntimeException('Balance execute failed: ' . $updBal->error);
+    }
+
+    $updBal->close();
+
+    $conn->commit();
+
+    legacy_json([
+        'ok' => true,
+        'assetId' => $assetId,
+        'midPrice' => $midPrice,
+        'bid' => $bid,
+        'ask' => $ask,
+        'closedCount' => $closedCount,
+        'totalProfitLoss' => $totalPnl,
+        'balanceDelta' => $totalCashDelta,
+        'spread' => $spread,
+    ]);
 
 } catch (Throwable $e) {
-  $conn->rollback();
-  http_response_code(500);
-  echo json_encode(["ok" => false, "error" => "Szerver hiba zárás közben."]);
+    $conn->rollback();
+    legacy_json(['ok' => false, 'error' => 'Szerver hiba zárás közben.'], 500);
 }
