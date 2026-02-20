@@ -12,5 +12,5 @@ class Candle extends Model
         'symbol','tf','open_ts','close_ts','open','high','low','close','ticks',
     ];
 
-    public $timestamps = true;
+    public $timestamps = false;
 }

@@ -12,5 +12,5 @@ class PriceTick extends Model
         'symbol','ts','price','bid','ask','source',
     ];
 
-    public $timestamps = true;
+    public $timestamps = false;
 }
