@@ -4,13 +4,24 @@ declare(strict_types=1);
 require_once __DIR__ . '/_bootstrap.php';
 require_once __DIR__ . '/finnhub_http.php';
 
+/**
+ * get_candles.php (Legacy stable + debug-friendly)
+ *
+ * Példa:
+ *  /legacy/StockMaster/get_candles.php?symbol=AAPL&tf=5m
+ *  /legacy/StockMaster/get_candles.php?symbol=AAPL&tf=1d&bars=200
+ *
+ * Auth:
+ *  JSON endpoint -> 401 JSON, nincs redirect.
+ */
+
 if (!isLoggedIn()) {
     legacy_json(['ok' => false, 'error' => 'Unauthenticated'], 401);
 }
 
 function tf_to_resolution(string $tf): string
 {
-    // Finnhub resolutions: 1, 5, 15, 30, 60, D, W, M
+    // Finnhub: 1,5,15,30,60,D,W,M
     return match ($tf) {
         '1m'  => '1',
         '5m'  => '5',
@@ -19,19 +30,6 @@ function tf_to_resolution(string $tf): string
         '1h'  => '60',
         '1d'  => 'D',
         default => '5',
-    };
-}
-
-function default_bars_for_tf(string $tf): int
-{
-    return match ($tf) {
-        '1m'  => 300, // ~5 óra
-        '5m'  => 300, // ~25 óra
-        '15m' => 300, // ~3 nap
-        '30m' => 300, // ~6 nap
-        '1h'  => 300, // ~12.5 nap
-        '1d'  => 365, // ~1 év
-        default => 300,
     };
 }
 
@@ -44,6 +42,19 @@ function seconds_per_bar(string $tf): int
         '30m' => 1800,
         '1h'  => 3600,
         '1d'  => 86400,
+        default => 300,
+    };
+}
+
+function default_bars(string $tf): int
+{
+    return match ($tf) {
+        '1m'  => 300,
+        '5m'  => 300,
+        '15m' => 300,
+        '30m' => 300,
+        '1h'  => 300,
+        '1d'  => 365,
         default => 300,
     };
 }
@@ -78,6 +89,7 @@ function cache_set(string $key, array $payload): void
     @file_put_contents($path, json_encode($payload));
 }
 
+// --- INPUT ---
 $symbol = strtoupper(trim((string)($_GET['symbol'] ?? '')));
 $tf     = strtolower(trim((string)($_GET['tf'] ?? '5m')));
 
@@ -87,26 +99,30 @@ if ($symbol === '' || !preg_match('/^[A-Z0-9\.\-\_]{1,20}$/', $symbol)) {
 
 $resolution = tf_to_resolution($tf);
 
-// from/to opcionális: ha nincs, default ablakot adunk
-$now  = time();
-$bars = (int)($_GET['bars'] ?? default_bars_for_tf($tf));
-if ($bars < 50)  $bars = 50;
+$bars = (int)($_GET['bars'] ?? default_bars($tf));
+if ($bars < 50) $bars = 50;
 if ($bars > 1000) $bars = 1000;
 
+$now  = time();
 $from = isset($_GET['from']) ? (int)$_GET['from'] : ($now - seconds_per_bar($tf) * $bars);
 $to   = isset($_GET['to'])   ? (int)$_GET['to']   : $now;
 
 if ($from <= 0 || $to <= 0 || $from >= $to) {
-    legacy_json(['ok' => false, 'error' => 'Invalid time range'], 422);
+    legacy_json([
+        'ok' => false,
+        'error' => 'Invalid time range',
+        'debug' => ['from' => $from, 'to' => $to]
+    ], 422);
 }
 
-// Cache kulcs (15s): symbol+tf+range (a range miatt fix a key)
+// --- CACHE: csak OK választ cache-eljünk (hibát NEM!) ---
 $cacheKey = 'candles_' . sha1($symbol . '|' . $resolution . '|' . $from . '|' . $to);
 $cached = cache_get($cacheKey, 15);
-if (is_array($cached)) {
+if (is_array($cached) && ($cached['ok'] ?? false) === true) {
     legacy_json($cached, 200);
 }
 
+// --- FINNHUB CALL ---
 $url = 'https://finnhub.io/api/v1/stock/candle'
     . '?symbol=' . rawurlencode($symbol)
     . '&resolution=' . rawurlencode($resolution)
@@ -115,21 +131,38 @@ $url = 'https://finnhub.io/api/v1/stock/candle'
 
 $fh = finnhub_get_json($url);
 
+// --- FINNHUB ERROR (KIÍRJUK A RAW-T!) ---
 if (!($fh['ok'] ?? false)) {
     $http = (int)($fh['http'] ?? 500);
-    $err  = (string)($fh['error'] ?? 'Finnhub error');
-    $payload = ['ok' => false, 'error' => $err, 'http' => $http];
-    cache_set($cacheKey, $payload); 
-    legacy_json($payload, $http >= 400 && $http <= 599 ? $http : 500);
+
+    // finnhub_http.php-tól függően lehet raw/body/debug mező:
+    $raw = (string)($fh['raw'] ?? ($fh['body'] ?? ''));
+    $dbg = $fh['debug'] ?? null;
+
+    legacy_json([
+        'ok' => false,
+        'error' => (string)($fh['error'] ?? 'Finnhub error'),
+        'http' => $http,
+        'raw' => mb_substr(trim($raw), 0, 2000),
+        'debug' => $dbg,
+        'request' => [
+            'symbol' => $symbol,
+            'tf' => $tf,
+            'resolution' => $resolution,
+            'from' => $from,
+            'to' => $to,
+            'url' => $url, // token nincs benne (finnhub_http hozzáfűzi)
+        ],
+    ], ($http >= 400 && $http <= 599) ? $http : 500);
 }
 
+// --- VALIDATE ---
 $data = $fh['data'] ?? null;
 if (!is_array($data)) {
-    $payload = ['ok' => false, 'error' => 'Invalid Finnhub response'];
-    cache_set($cacheKey, $payload);
-    legacy_json($payload, 502);
+    legacy_json(['ok' => false, 'error' => 'Invalid Finnhub response'], 502);
 }
 
+// Finnhub candle: { c,h,l,o,t,v, s:"ok"/"no_data" }
 $status = (string)($data['s'] ?? '');
 if ($status !== 'ok') {
     $payload = [
@@ -140,7 +173,7 @@ if ($status !== 'ok') {
         'from' => $from,
         'to' => $to,
         'candles' => [],
-        'note' => ($status === 'no_data') ? 'no_data' : 'unknown_status',
+        'note' => ($status === 'no_data') ? 'no_data' : ('status:' . $status),
     ];
     cache_set($cacheKey, $payload);
     legacy_json($payload, 200);
@@ -153,9 +186,17 @@ $l = $data['l'] ?? [];
 $c = $data['c'] ?? [];
 
 if (!is_array($t) || !is_array($o) || !is_array($h) || !is_array($l) || !is_array($c)) {
-    $payload = ['ok' => false, 'error' => 'Malformed candle arrays'];
-    cache_set($cacheKey, $payload);
-    legacy_json($payload, 502);
+    legacy_json([
+        'ok' => false,
+        'error' => 'Malformed candle arrays',
+        'debug' => [
+            't' => is_array($t) ? count($t) : gettype($t),
+            'o' => is_array($o) ? count($o) : gettype($o),
+            'h' => is_array($h) ? count($h) : gettype($h),
+            'l' => is_array($l) ? count($l) : gettype($l),
+            'c' => is_array($c) ? count($c) : gettype($c),
+        ],
+    ], 502);
 }
 
 $count = min(count($t), count($o), count($h), count($l), count($c));
@@ -166,7 +207,7 @@ for ($i = 0; $i < $count; $i++) {
     if ($ts <= 0) continue;
 
     $candles[] = [
-        'time'  => $ts,
+        'time'  => $ts,            // unix seconds
         'open'  => (float)$o[$i],
         'high'  => (float)$h[$i],
         'low'   => (float)$l[$i],
@@ -184,5 +225,7 @@ $payload = [
     'candles' => $candles,
 ];
 
+// csak sikerest cache-elünk
 cache_set($cacheKey, $payload);
+
 legacy_json($payload, 200);

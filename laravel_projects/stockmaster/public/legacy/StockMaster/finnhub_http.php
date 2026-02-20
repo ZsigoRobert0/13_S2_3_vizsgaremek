@@ -61,14 +61,14 @@ function finnhub_get_json(string $url): array
     }
 
     // HTTP error
-    if ($code >= 400) {
-        return [
-            "ok" => false,
-            "http" => $code,
-            "error" => "HTTP error",
-            "raw" => mb_substr((string)$resp, 0, 300)
-        ];
-    }
+   if ($code >= 400) {
+    return [
+        "ok" => false,
+        "http" => $code,
+        "error" => "HTTP error",
+        "raw" => mb_substr(trim((string)$resp), 0, 2000),
+    ];
+}
 
     $data = json_decode((string)$resp, true);
 
