@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Gép: localhost
--- Létrehozás ideje: 2026. Jan 25. 22:14
+-- Létrehozás ideje: 2026. Feb 22. 09:19
 -- Kiszolgáló verziója: 8.0.44
 -- PHP verzió: 8.2.30
 
@@ -95,6 +95,47 @@ INSERT INTO `assets` (`ID`, `Symbol`, `Name`, `IsTradable`) VALUES
 (223, 'HON', 'Honeywell International Inc.', 1),
 (224, 'IBM', 'International Business Machines Corporation', 1),
 (225, 'SPY', 'SPDR S&P 500 ETF Trust', 1);
+
+-- --------------------------------------------------------
+
+--
+-- Tábla szerkezet ehhez a táblához `candles`
+--
+
+CREATE TABLE `candles` (
+  `id` bigint UNSIGNED NOT NULL,
+  `symbol` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `tf` varchar(5) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `open_ts` bigint UNSIGNED NOT NULL,
+  `close_ts` bigint UNSIGNED NOT NULL,
+  `open` decimal(16,6) NOT NULL,
+  `high` decimal(16,6) NOT NULL,
+  `low` decimal(16,6) NOT NULL,
+  `close` decimal(16,6) NOT NULL,
+  `ticks` bigint UNSIGNED NOT NULL DEFAULT '0',
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Tábla szerkezet ehhez a táblához `migrations`
+--
+
+CREATE TABLE `migrations` (
+  `id` int UNSIGNED NOT NULL,
+  `migration` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `batch` int NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+--
+-- A tábla adatainak kiíratása `migrations`
+--
+
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES
+(1, '2026_02_20_000001_create_price_ticks_table', 1),
+(2, '2026_02_20_000002_create_candles_table', 1);
 
 -- --------------------------------------------------------
 
@@ -251,7 +292,8 @@ INSERT INTO `positions` (`ID`, `UserID`, `AssetID`, `OpenTime`, `CloseTime`, `Qu
 (113, 2, 170, '2026-01-23 09:42:03', '2026-01-23 09:42:12', 4.00, 248.3250, 248.3750, 'sell', 0, -0.20),
 (114, 2, 170, '2026-01-23 09:42:10', '2026-01-23 09:42:12', 4.00, 248.3750, 248.3250, 'buy', 0, -0.20),
 (115, 2, 170, '2026-01-25 09:49:10', NULL, 1.00, 248.0650, NULL, 'buy', 1, NULL),
-(116, 2, 185, '2026-01-25 10:10:15', '2026-01-25 10:11:46', 1.00, 301.0950, 301.0450, 'buy', 0, -0.05);
+(116, 2, 185, '2026-01-25 10:10:15', '2026-01-25 10:11:46', 1.00, 301.0950, 301.0450, 'buy', 0, -0.05),
+(117, 2, 204, '2026-01-26 08:48:02', '2026-01-26 08:48:08', 1.00, 259.6550, 259.7050, 'sell', 0, -0.05);
 
 -- --------------------------------------------------------
 
@@ -269,6 +311,24 @@ CREATE TABLE `pricedata` (
   `ClosePrice` decimal(10,4) DEFAULT NULL,
   `Volume` bigint DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Tábla szerkezet ehhez a táblához `price_ticks`
+--
+
+CREATE TABLE `price_ticks` (
+  `id` bigint UNSIGNED NOT NULL,
+  `symbol` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `ts` bigint UNSIGNED NOT NULL,
+  `price` decimal(16,6) NOT NULL,
+  `bid` decimal(16,6) DEFAULT NULL,
+  `ask` decimal(16,6) DEFAULT NULL,
+  `source` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'finnhub',
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- --------------------------------------------------------
 
@@ -347,7 +407,8 @@ CREATE TABLE `users` (
 
 INSERT INTO `users` (`ID`, `Username`, `Email`, `PasswordHash`, `RegistrationDate`, `IsLoggedIn`, `PreferredTheme`, `NotificationsEnabled`, `DemoBalance`, `RealBalance`, `PreferredCurrency`) VALUES
 (1, 'csakibalazs545', 'csakinet29@gmail.com', '$2y$10$EsjbudiCCm/NbFksBMkDXOcYX2zghKuVxkcVHNfkZmBWDJqTx4jXS', '2025-12-09 12:12:51', 0, 'dark', 1, 10000.00, 0.00, 'USD'),
-(2, 'csakibalazs', 'csaki.balazs@diak.szi-pg.hu', '$2y$10$4bt8JvNeH5i51Dc6dceV7OawF8lffwg9ZRKUgNSut1GEV8rAsLZjG', '2025-12-09 12:13:48', 0, 'dark', 1, 19945.17, 0.00, 'USD');
+(2, 'csakibalazs', 'csaki.balazs@diak.szi-pg.hu', '$2y$10$4bt8JvNeH5i51Dc6dceV7OawF8lffwg9ZRKUgNSut1GEV8rAsLZjG', '2025-12-09 12:13:48', 0, 'dark', 1, 19945.11, 0.00, 'USD'),
+(3, 'laravel', 'csaki.laravel@gmail.com', '$2y$10$IQd3Nhq9bjUzxdsCKD8lse6sNpqDgt6TxQN78BLqge00nFwzDjLxG', '2026-02-17 19:15:19', 0, 'dark', 1, 10000.00, 0.00, 'USD');
 
 -- --------------------------------------------------------
 
@@ -387,6 +448,20 @@ ALTER TABLE `assets`
   ADD UNIQUE KEY `uq_symbol` (`Symbol`);
 
 --
+-- A tábla indexei `candles`
+--
+ALTER TABLE `candles`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `ux_candles_symbol_tf_open` (`symbol`,`tf`,`open_ts`),
+  ADD KEY `ix_candles_symbol_tf_open` (`symbol`,`tf`,`open_ts`);
+
+--
+-- A tábla indexei `migrations`
+--
+ALTER TABLE `migrations`
+  ADD PRIMARY KEY (`id`);
+
+--
 -- A tábla indexei `notifications`
 --
 ALTER TABLE `notifications`
@@ -405,6 +480,15 @@ ALTER TABLE `positions`
 ALTER TABLE `pricedata`
   ADD PRIMARY KEY (`ID`),
   ADD KEY `AssetID` (`AssetID`);
+
+--
+-- A tábla indexei `price_ticks`
+--
+ALTER TABLE `price_ticks`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `ux_ticks_symbol_ts` (`symbol`,`ts`),
+  ADD KEY `ix_ticks_symbol_ts` (`symbol`,`ts`),
+  ADD KEY `price_ticks_symbol_index` (`symbol`);
 
 --
 -- A tábla indexei `transactionslog`
@@ -452,6 +536,18 @@ ALTER TABLE `assets`
   MODIFY `ID` int NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=226;
 
 --
+-- AUTO_INCREMENT a táblához `candles`
+--
+ALTER TABLE `candles`
+  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
+
+--
+-- AUTO_INCREMENT a táblához `migrations`
+--
+ALTER TABLE `migrations`
+  MODIFY `id` int UNSIGNED NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
+
+--
 -- AUTO_INCREMENT a táblához `notifications`
 --
 ALTER TABLE `notifications`
@@ -461,13 +557,19 @@ ALTER TABLE `notifications`
 -- AUTO_INCREMENT a táblához `positions`
 --
 ALTER TABLE `positions`
-  MODIFY `ID` int NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=117;
+  MODIFY `ID` int NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=118;
 
 --
 -- AUTO_INCREMENT a táblához `pricedata`
 --
 ALTER TABLE `pricedata`
   MODIFY `ID` int NOT NULL AUTO_INCREMENT;
+
+--
+-- AUTO_INCREMENT a táblához `price_ticks`
+--
+ALTER TABLE `price_ticks`
+  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
 
 --
 -- AUTO_INCREMENT a táblához `transactionslog`
@@ -491,7 +593,7 @@ ALTER TABLE `tutorials`
 -- AUTO_INCREMENT a táblához `users`
 --
 ALTER TABLE `users`
-  MODIFY `ID` int NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
+  MODIFY `ID` int NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=4;
 
 --
 -- AUTO_INCREMENT a táblához `usersettings`

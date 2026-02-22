@@ -40,6 +40,7 @@ if ($res) {
 <!-- Lightweight Charts (candlestick) -->
 <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 
+
 <style>
 :root{
     --bg:#0f1724;
@@ -548,15 +549,115 @@ window.closeByAsset = closeByAsset;
 
 
 /** -----------------------------
- *  CHART (Laravel /api/candles)
+ *  CHART (Laravel /api/candles)  ✅ FIXED: initial + realtime + backfill + stable camera
  *  ---------------------------- */
 const chartEl = document.getElementById('chart');
 const chartOverlay = document.getElementById('chartOverlay');
 
 let chart, candleSeries;
 let currentTf = '1m';
+
 let chartPollTimer = null;
-let lastCandleTime = null;
+
+// Candle cache (duplikáció nélkül)
+let candleMap = new Map(); // time(sec) -> candle
+let earliestTime = null;
+let latestTime = null;
+
+// Flags
+let isLoadingInitial = false;
+let isLoadingBackfill = false;
+let lastBackfillAt = 0;
+
+// config
+const INITIAL_LIMIT  = 2000;  // 1500-3000
+const BACKFILL_LIMIT = 1500;
+const REALTIME_LIMIT = 80;    // legutolsó N
+const REALTIME_MS    = 4500;
+const DEV_MIN_WICK   = false; // ha lapos gyertyák zavarnak, tedd true-ra (csak vizuális)
+
+function tfToSeconds(tf) {
+  switch (tf) {
+    case '1m': return 60;
+    case '5m': return 300;
+    case '15m': return 900;
+    case '1h': return 3600;
+    case '1d': return 86400;
+    default: return 60;
+  }
+}
+
+function setOverlay(text) {
+  if (!chartOverlay) return;
+  chartOverlay.textContent = text || '';
+  chartOverlay.style.display = text ? 'flex' : 'none';
+}
+
+function applyDevMinWick(c) {
+  if (!DEV_MIN_WICK) return c;
+  if (c.open === c.high && c.open === c.low && c.open === c.close) {
+    const eps = Math.max(0.0001, c.open * 0.00002);
+    return { ...c, high: c.high + eps, low: c.low - eps };
+  }
+  return c;
+}
+
+function normalizeCandle(raw) {
+  if (!raw) return null;
+  const t = Number(raw.time ?? raw.open_ts ?? raw.ts);
+  const o = Number(raw.open ?? raw.o);
+  const h = Number(raw.high ?? raw.h);
+  const l = Number(raw.low ?? raw.l);
+  const c = Number(raw.close ?? raw.c);
+  if (!Number.isFinite(t) || !Number.isFinite(o) || !Number.isFinite(h) || !Number.isFinite(l) || !Number.isFinite(c)) return null;
+  return applyDevMinWick({ time: Math.floor(t), open: o, high: h, low: l, close: c });
+}
+
+function mergeCandles(list) {
+  // list: [{time,open,high,low,close}, ...]
+  for (const x of list) {
+    if (!x || x.time == null) continue;
+    candleMap.set(x.time, x);
+  }
+
+  const times = Array.from(candleMap.keys()).sort((a,b)=>a-b);
+  if (times.length === 0) {
+    earliestTime = null;
+    latestTime = null;
+    return [];
+  }
+  earliestTime = times[0];
+  latestTime = times[times.length - 1];
+  return times.map(t => candleMap.get(t));
+}
+
+async function fetchCandles(symbol, tf, opts = {}) {
+  const limit = opts.limit ?? 500;
+
+  const params = new URLSearchParams({
+    symbol,
+    tf,
+    limit: String(limit),
+  });
+
+  if (opts.from != null) params.set('from', String(opts.from));
+  if (opts.to != null)   params.set('to', String(opts.to));
+
+  const url = `/api/candles?${params.toString()}`;
+  const res = await fetch(url, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`HTTP ${res.status} candle hiba`);
+  const data = await res.json();
+  if (!data || data.ok !== true) throw new Error(data?.error || 'Candle API hiba');
+
+  const arr = Array.isArray(data.candles) ? data.candles : [];
+  const out = [];
+  for (const r of arr) {
+    const c = normalizeCandle(r);
+    if (c) out.push(c);
+  }
+  out.sort((a,b)=>a.time-b.time);
+  return out;
+}
 
 function initChart() {
   chart = LightweightCharts.createChart(chartEl, {
@@ -565,12 +666,20 @@ function initChart() {
       textColor: getComputedStyle(document.body).getPropertyValue('--text').trim() || '#e6eef8',
     },
     rightPriceScale: { borderVisible: false },
-    timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false },
+    timeScale: {
+      borderVisible: false,
+      timeVisible: true,
+      secondsVisible: (currentTf === '1m'),
+      rightOffset: 8,
+      barSpacing: 6,
+    },
     grid: {
       vertLines: { visible: false },
       horzLines: { visible: false },
     },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+    handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
   });
 
   candleSeries = chart.addCandlestickSeries({
@@ -583,92 +692,146 @@ function initChart() {
 
   // resize
   const ro = new ResizeObserver(() => {
-    chart.applyOptions({ width: chartEl.clientWidth, height: chartEl.clientHeight });
+    try {
+      chart.applyOptions({ width: chartEl.clientWidth, height: chartEl.clientHeight });
+    } catch(e){}
   });
   ro.observe(chartEl);
   chart.applyOptions({ width: chartEl.clientWidth, height: chartEl.clientHeight });
-}
 
-async function fetchCandles(symbol, tf, opts = {}) {
-  const limit = opts.limit ?? 500;
-
-  const params = new URLSearchParams({
-    symbol,
-    tf,
-    limit: String(limit),
+  // backfill trigger
+  chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
+    if (!range || earliestTime == null) return;
+    maybeBackfill(range);
   });
-
-  if (opts.from) params.set('from', String(opts.from));
-  if (opts.to) params.set('to', String(opts.to));
-
-  const url = `/api/candles?${params.toString()}`;
-  const res = await fetch(url, { cache: 'no-store' });
-  const data = await res.json();
-  if (!data || data.ok !== true) throw new Error(data?.error || 'Candle API hiba');
-
-  // A controllered "candles" tömböt ad, benne {time, open, high, low, close}
-  return data.candles || data.candles === 0 ? data.candles : (data.candles ?? data.candles);
 }
 
-function setOverlay(text) {
-  if (!chartOverlay) return;
-  chartOverlay.textContent = text;
-  chartOverlay.style.display = text ? 'flex' : 'none';
+function resetChartData() {
+  candleMap.clear();
+  earliestTime = null;
+  latestTime = null;
+  if (candleSeries) candleSeries.setData([]);
 }
 
-async function loadChartForSelected(fullReload = false) {
+async function loadInitialCandles() {
   if (!selected) return;
   if (!chart) initChart();
 
-  // stop previous polling
+  // stop old realtime
   if (chartPollTimer) { clearInterval(chartPollTimer); chartPollTimer = null; }
-  lastCandleTime = null;
 
+  isLoadingInitial = true;
+  resetChartData();
   setOverlay('Chart betöltés…');
 
   try {
-    const candles = await (async () => {
-      const res = await fetch(`/api/candles?symbol=${encodeURIComponent(selected.symbol)}&tf=${encodeURIComponent(currentTf)}&limit=300`, {cache:'no-store'});
-      const data = await res.json();
-      if (!data || data.ok !== true) throw new Error(data?.error || 'Candle API hiba');
-      return data.candles || [];
-    })();
+    const candles = await fetchCandles(selected.symbol, currentTf, { limit: INITIAL_LIMIT });
+    const merged = mergeCandles(candles);
+    candleSeries.setData(merged);
 
-    candleSeries.setData(candles);
+    if (!merged.length) {
+      setOverlay('Nincs candle adat (DB).');
+    } else {
+      setOverlay('');
+      chart.timeScale().fitContent();
+    }
 
-    if (candles.length) lastCandleTime = candles[candles.length - 1].time;
-
-    setOverlay(candles.length ? '' : 'Nincs candle adat (még). Küldj be több tick-et.');
-    chart.timeScale().fitContent();
-
-    // polling: csak frissítünk
-    chartPollTimer = setInterval(async () => {
-      try {
-        // kis trükk: kérjünk egy kicsit "visszább" is, hogy bucket update is átjöjjön
-        const from = lastCandleTime ? (lastCandleTime - 3600) : undefined;
-
-        const res = await fetch(`/api/candles?symbol=${encodeURIComponent(selected.symbol)}&tf=${encodeURIComponent(currentTf)}&limit=300${from ? `&from=${from}` : ''}`, {cache:'no-store'});
-        const data = await res.json();
-        if (!data || data.ok !== true) return;
-
-        const c = data.candles || [];
-        if (!c.length) return;
-
-        // egyszerű: setData (stabil, gyors bőven ennyi candle-re)
-        candleSeries.setData(c);
-
-        lastCandleTime = c[c.length - 1].time;
-        setOverlay('');
-      } catch (e) {
-        // ne spammeljünk alertet
-        console.warn('Chart poll hiba:', e);
-      }
-    }, 5000);
-
+    startRealtime();
   } catch (e) {
     console.error(e);
     setOverlay('Chart hiba (nézd meg Console-t).');
+  } finally {
+    isLoadingInitial = false;
   }
+}
+
+async function maybeBackfill(range) {
+  if (isLoadingInitial) return;
+
+  const now = Date.now();
+  if (isLoadingBackfill) return;
+  if (now - lastBackfillAt < 650) return; // throttle
+
+  const leftVisible = Math.floor(range.from);
+  const threshold = 5 * tfToSeconds(currentTf);
+  if (leftVisible > (earliestTime + threshold)) return;
+
+  isLoadingBackfill = true;
+  lastBackfillAt = now;
+
+  // camera save
+  const ts = chart.timeScale();
+  const before = ts.getVisibleRange();
+
+  try {
+    setOverlay('Történet betöltése…');
+
+    const to = earliestTime - tfToSeconds(currentTf); // earliest-1 candle
+    const older = await fetchCandles(selected.symbol, currentTf, { limit: BACKFILL_LIMIT, to });
+
+    if (!older.length) {
+      setOverlay('Nincs több történet (DB-ben).');
+      setTimeout(() => setOverlay(''), 1200);
+      return;
+    }
+
+    const merged = mergeCandles(older);
+    candleSeries.setData(merged);
+
+    // restore camera (no jump)
+    if (before) ts.setVisibleRange(before);
+
+    setOverlay('');
+  } catch (e) {
+    console.warn('Backfill hiba:', e);
+    setOverlay('Backfill hiba (Console).');
+    setTimeout(() => setOverlay(''), 1200);
+  } finally {
+    isLoadingBackfill = false;
+  }
+}
+
+function startRealtime() {
+  if (chartPollTimer) { clearInterval(chartPollTimer); chartPollTimer = null; }
+
+  chartPollTimer = setInterval(async () => {
+    try {
+      if (!selected || latestTime == null) return;
+
+      const tfSec = tfToSeconds(currentTf);
+      const from = Math.max(0, latestTime - (REALTIME_LIMIT * tfSec));
+
+      // kamera mentés + "right edge" detekt
+      const ts = chart.timeScale();
+      const before = ts.getVisibleRange();
+      const follow = (() => {
+        if (!before || latestTime == null) return true;
+        return before.to >= (latestTime - 2 * tfSec);
+      })();
+
+      const recent = await fetchCandles(selected.symbol, currentTf, { limit: REALTIME_LIMIT, from });
+      if (!recent.length) return;
+
+      const merged = mergeCandles(recent);
+      candleSeries.setData(merged);
+
+      if (follow) {
+        ts.scrollToRealTime();
+      } else if (before) {
+        ts.setVisibleRange(before);
+      }
+
+      if (chartOverlay && chartOverlay.style.display !== 'none') setOverlay('');
+    } catch (e) {
+      // realtime: ne rángassuk az overlayt, csak console
+      console.warn('Realtime poll hiba:', e);
+    }
+  }, REALTIME_MS);
+}
+
+async function loadChartForSelected(fullReload = false) {
+  // kompatibilitás miatt meghagyjuk a hívást: selectAsset -> loadChartForSelected(true)
+  await loadInitialCandles();
 }
 
 // timeframe buttons
@@ -677,6 +840,16 @@ document.querySelectorAll('.btn[data-tf]').forEach(btn => {
     document.querySelectorAll('.btn[data-tf]').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     currentTf = btn.getAttribute('data-tf') || '1m';
+
+    // secondsVisible update
+    if (chart) {
+      try {
+        chart.applyOptions({
+          timeScale: { secondsVisible: (currentTf === '1m') }
+        });
+      } catch(e){}
+    }
+
     loadChartForSelected(true);
   });
 });

@@ -5,4 +5,6 @@ use App\Http\Controllers\Api\TickController;
 use App\Http\Controllers\Api\CandleController;
 
 Route::post('/tick/ingest', [TickController::class, 'ingest']);
-Route::get('/candles', [CandleController::class, 'get']);
+
+// A controllerben index() van, nem get()
+Route::get('/candles', [CandleController::class, 'index']);

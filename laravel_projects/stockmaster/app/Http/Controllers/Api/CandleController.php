@@ -8,71 +8,77 @@ use Illuminate\Http\Request;
 
 class CandleController extends Controller
 {
-    public function get(Request $req)
+    private const TF_SECONDS = [
+        '1m'  => 60,
+        '5m'  => 300,
+        '15m' => 900,
+        '1h'  => 3600,
+        '1d'  => 86400,
+    ];
+
+    // Kompatibilitás: ha valahol még get()-et hívsz, ne omoljon össze
+    public function get(Request $request)
     {
-        $data = $req->validate([
+        return $this->index($request);
+    }
+
+    public function index(Request $request)
+    {
+        $data = $request->validate([
             'symbol' => ['required','string','max:20'],
-            'tf'     => ['required','in:1m,5m,15m,1h,1d'],
+            'tf'     => ['required','string','in:1m,5m,15m,1h,1d'],
             'from'   => ['nullable','integer','min:1'],
             'to'     => ['nullable','integer','min:1'],
-            'limit'  => ['nullable','integer','min:1','max:2000'],
+            'limit'  => ['nullable','integer','min:1','max:5000'],
+            'order'  => ['nullable','in:asc,desc'],
         ]);
 
         $symbol = strtoupper(trim($data['symbol']));
         $tf     = $data['tf'];
-        $limit  = (int)($data['limit'] ?? 500);
+        $tfSec  = self::TF_SECONDS[$tf];
 
-        // ✅ Ha nincs from/to → utolsó N gyertya
-        if (!isset($data['from']) && !isset($data['to'])) {
+        $from   = isset($data['from']) ? (int)$data['from'] : null;
+        $to     = isset($data['to'])   ? (int)$data['to']   : null;
 
-            $rows = Candle::query()
-                ->where('symbol', $symbol)
-                ->where('tf', $tf)
-                ->orderByDesc('open_ts')
-                ->limit($limit)
-                ->get(['open_ts','open','high','low','close'])
-                ->reverse()
-                ->values();
+        // ms -> sec védelem (ha valaki ms-et küld)
+        if ($from !== null && $from > 2_000_000_000_000) $from = intdiv($from, 1000);
+        if ($to   !== null && $to   > 2_000_000_000_000) $to   = intdiv($to, 1000);
 
-            $from = $rows->first()->open_ts ?? null;
-            $to   = $rows->last()->open_ts ?? null;
+        $limit = isset($data['limit']) ? (int)$data['limit'] : 300;
+        $order = $data['order'] ?? 'desc'; // DB-ből desc gyorsabb (utolsó N), majd megfordítjuk
 
-        } else {
+        $q = Candle::query()
+            ->where('symbol', $symbol)
+            ->where('tf', $tf);
 
-            $from = (int)($data['from'] ?? 0);
-            $to   = (int)($data['to'] ?? 2147483647);
+        if ($from !== null) $q->where('open_ts', '>=', $from);
+        if ($to   !== null) $q->where('open_ts', '<=', $to);
 
-            if ($from >= $to) {
-                return response()->json([
-                    'ok'=>false,
-                    'error'=>'Invalid range'
-                ], 422);
-            }
+        $rows = $q->orderBy('open_ts', $order)->limit($limit)->get();
 
-            $rows = Candle::query()
-                ->where('symbol', $symbol)
-                ->where('tf', $tf)
-                ->whereBetween('open_ts', [$from, $to])
-                ->orderBy('open_ts','asc')
-                ->limit($limit)
-                ->get(['open_ts','open','high','low','close']);
+        // chartnak asc kell
+        if ($order === 'desc') {
+            $rows = $rows->reverse()->values();
         }
 
-        $candles = $rows->map(fn($r) => [
-            'time'  => (int)$r->open_ts,
-            'open'  => (float)$r->open,
-            'high'  => (float)$r->high,
-            'low'   => (float)$r->low,
-            'close' => (float)$r->close,
-        ])->values();
+        $candles = $rows->map(function ($c) {
+            return [
+                'time'  => (int)$c->open_ts, // UNIX seconds
+                'open'  => (float)$c->open,
+                'high'  => (float)$c->high,
+                'low'   => (float)$c->low,
+                'close' => (float)$c->close,
+            ];
+        })->all();
 
         return response()->json([
-            'ok' => true,
-            'symbol' => $symbol,
-            'tf' => $tf,
-            'from' => $from,
-            'to' => $to,
-            'count' => $candles->count(),
+            'ok'      => true,
+            'symbol'  => $symbol,
+            'tf'      => $tf,
+            'tf_sec'  => $tfSec,
+            'from'    => $from,
+            'to'      => $to,
+            'count'   => count($candles),
             'candles' => $candles,
         ]);
     }

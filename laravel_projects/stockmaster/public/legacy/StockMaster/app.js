@@ -5,8 +5,16 @@
   const API_BASE = 'http://127.0.0.1:8000/api';   // Laravel API
   const SPREAD = 0.05;
   const HALF_SPREAD = SPREAD / 2;
+
   const PRICE_POLL_MS = 2000;   // legacy state refresh
   const CHART_POLL_MS = 4000;   // candle refresh
+
+  // History/backfill beállítások
+  const INITIAL_CANDLE_LIMIT = 1500; // több adat -> kevesebb "üres mező"
+  const HISTORY_PAGE_LIMIT = 1500;   // ennyit töltünk, amikor balra húzol
+  const HISTORY_THRESHOLD_BARS = 60; // ha ennyire közel érsz a bal széléhez -> loadMore
+
+  const TF_SEC = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '1d': 86400 };
 
   // ====== STATE ======
   const assets = (boot.assets || []).map(a => ({ ...a, price: 0 }));
@@ -15,6 +23,12 @@
   let positions = [];
   let balance = Number(boot.demoBalance || 0);
   let tf = '1m';
+
+  // Chart cache (history + realtime merge)
+  let candleCache = [];
+  let earliestTime = null;
+  let latestTime = null;
+  let isLoadingHistory = false;
 
   // ====== DOM ======
   const bidVal = document.getElementById("bidVal");
@@ -50,12 +64,40 @@
     });
   }
 
+  function normalizeCandles(arr) {
+    return (arr || []).map(c => ({
+      time: Number(c.time),
+      open: Number(c.open),
+      high: Number(c.high),
+      low: Number(c.low),
+      close: Number(c.close),
+    })).filter(c =>
+      Number.isFinite(c.time) &&
+      Number.isFinite(c.open) &&
+      Number.isFinite(c.high) &&
+      Number.isFinite(c.low) &&
+      Number.isFinite(c.close)
+    ).sort((a, b) => a.time - b.time);
+  }
+
+  function mergeUnique(oldArr, newArr) {
+    const m = new Map();
+    for (const c of oldArr) m.set(c.time, c);
+    for (const c of newArr) m.set(c.time, c);
+    return Array.from(m.values()).sort((a, b) => a.time - b.time);
+  }
+
   // ====== CHART (Lightweight Charts) ======
   const proChartEl = document.getElementById('proChart');
   const chart = LightweightCharts.createChart(proChartEl, {
     layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#cbd5e1' },
     grid: { vertLines: { color: 'rgba(148,163,184,0.08)' }, horzLines: { color: 'rgba(148,163,184,0.08)' } },
-    timeScale: { timeVisible: true, secondsVisible: false },
+    timeScale: {
+      timeVisible: true,
+      secondsVisible: false,
+      rightOffset: 6,     // “lélegzet” jobb oldalt
+      barSpacing: 10,     // ne legyen üresnek érzés
+    },
     rightPriceScale: { borderColor: 'rgba(148,163,184,0.15)' },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
   });
@@ -76,26 +118,51 @@
   window.addEventListener('resize', resizeChart);
   resizeChart();
 
+  // 🔥 Backfill trigger: ha balra húzol és közel vagy a legrégebbi candle-höz -> töltsünk még
+  chart.timeScale().subscribeVisibleTimeRangeChange(async (range) => {
+    if (!range || !selected || !earliestTime || isLoadingHistory) return;
+
+    const threshold = (TF_SEC[tf] || 60) * HISTORY_THRESHOLD_BARS;
+    if (range.from <= earliestTime + threshold) {
+      await loadMoreHistory().catch(() => {});
+    }
+  });
+
+  async function fetchCandles({ symbol, tf, limit, from = null, to = null }) {
+    const qs = new URLSearchParams();
+    qs.set('symbol', symbol);
+    qs.set('tf', tf);
+    qs.set('limit', String(limit));
+    if (from !== null) qs.set('from', String(from));
+    if (to !== null) qs.set('to', String(to));
+
+    const url = `${API_BASE}/candles?${qs.toString()}`;
+
+    const res = await fetch(url, { cache: 'no-store', mode: 'cors' });
+    const json = await res.json();
+    if (!json.ok) throw new Error(json.error || 'Candles API error');
+    return normalizeCandles(json.candles || []);
+  }
+
   async function fetchCandlesFull() {
     if (!selected) return;
-    const url = `${API_BASE}/candles?symbol=${encodeURIComponent(selected.symbol)}&tf=${encodeURIComponent(tf)}&limit=500`;
 
     try {
-      const res = await fetch(url, { cache: 'no-store', mode: 'cors' });
-      const json = await res.json();
-      if (!json.ok) throw new Error(json.error || 'Candles API error');
+      const data = await fetchCandles({
+        symbol: selected.symbol,
+        tf,
+        limit: INITIAL_CANDLE_LIMIT,
+      });
 
-      const data = (json.candles || []).map(c => ({
-        time: Number(c.time),
-        open: Number(c.open),
-        high: Number(c.high),
-        low: Number(c.low),
-        close: Number(c.close),
-      }));
+      candleCache = data;
+      earliestTime = data.length ? data[0].time : null;
+      latestTime = data.length ? data[data.length - 1].time : null;
 
-      series.setData(data);
+      series.setData(candleCache);
       chart.timeScale().fitContent();
+
       if (chartHint) chartHint.style.display = data.length ? 'none' : 'flex';
+      if (chartHint && !data.length) chartHint.textContent = 'Nincs adat ehhez a symbol-hoz (ingest kell).';
     } catch (e) {
       console.warn('Candles fetch error:', e);
       if (chartHint) {
@@ -105,27 +172,57 @@
     }
   }
 
-  async function fetchCandlesLast() {
-    if (!selected) return;
-    const url = `${API_BASE}/candles?symbol=${encodeURIComponent(selected.symbol)}&tf=${encodeURIComponent(tf)}&limit=5`;
+  async function loadMoreHistory() {
+    if (!selected || !earliestTime) return;
+    if (isLoadingHistory) return;
 
+    isLoadingHistory = true;
     try {
-      const res = await fetch(url, { cache: 'no-store', mode: 'cors' });
-      const json = await res.json();
-      if (!json.ok) return;
+      // megőrizzük a jelenlegi nézetet, hogy ne “ugorjon” a chart
+      const prevRange = chart.timeScale().getVisibleRange();
 
-      const arr = json.candles || [];
-      if (!arr.length) return;
-
-      const last = arr[arr.length - 1];
-      series.update({
-        time: Number(last.time),
-        open: Number(last.open),
-        high: Number(last.high),
-        low: Number(last.low),
-        close: Number(last.close),
+      const older = await fetchCandles({
+        symbol: selected.symbol,
+        tf,
+        limit: HISTORY_PAGE_LIMIT,
+        to: earliestTime - 1,
       });
 
+      if (!older.length) return;
+
+      candleCache = mergeUnique(candleCache, older);
+      earliestTime = candleCache[0].time;
+      latestTime = candleCache[candleCache.length - 1].time;
+
+      series.setData(candleCache);
+
+      // visszaállítjuk a nézetet (ne rántsa el a kamera a frissen betöltött adatok miatt)
+      if (prevRange) chart.timeScale().setVisibleRange(prevRange);
+
+      if (chartHint) chartHint.style.display = 'none';
+    } catch (e) {
+      console.warn('History load error:', e);
+    } finally {
+      isLoadingHistory = false;
+    }
+  }
+
+  async function fetchCandlesLast() {
+    if (!selected) return;
+    try {
+      // last pár bar: merge + setData (stabilabb, mint csak update)
+      const last = await fetchCandles({
+        symbol: selected.symbol,
+        tf,
+        limit: 15,
+      });
+      if (!last.length) return;
+
+      candleCache = mergeUnique(candleCache, last);
+      earliestTime = candleCache[0].time;
+      latestTime = candleCache[candleCache.length - 1].time;
+
+      series.setData(candleCache);
       if (chartHint) chartHint.style.display = 'none';
     } catch {
       // csendben
@@ -170,11 +267,59 @@
   // ====== SELECT ASSET ======
   function selectAsset(a) {
     selected = a;
+
+    // reset chart cache instrument váltáskor
+    candleCache = [];
+    earliestTime = null;
+    latestTime = null;
+
     assetTitleEl.textContent = `${a.symbol} — ${a.name}`;
     assetPriceEl.textContent = (a.price ? a.price.toFixed(2) : "…") + " $";
 
     updateSpreadUI();
-    fetchCandlesFull();       // ✅ chart reload symbol váltáskor
+    fetchCandlesFull().then(() => startChartPolling());
+  }
+
+  // ====== PRICE (legacy get_price.php) ======
+  async function fetchPriceForSymbol(symbol) {
+    try {
+      const res = await fetch(`get_price.php?symbol=${encodeURIComponent(symbol)}`, { cache: 'no-store' });
+      const json = await res.json();
+      if (!json || typeof json.price === 'undefined') return;
+
+      const mid = Number(json.price);
+      prices[symbol] = mid;
+
+      const a = assets.find(x => x.symbol === symbol);
+      if (a) a.price = mid;
+
+      const priceEl = instContainer.querySelector(`.price[data-symbol="${symbol}"]`);
+      if (priceEl) priceEl.textContent = mid.toFixed(2) + " $";
+
+      if (selected && selected.symbol === symbol) {
+        assetPriceEl.textContent = mid.toFixed(2) + " $";
+        updateSpreadUI();
+      }
+    } catch {
+      // ha Finnhub nincs, maradhat "—"
+    }
+  }
+
+  // ====== STATE (positions / balance) ======
+  async function refreshState() {
+    try {
+      const res = await fetch('get_state.php', { cache: 'no-store' });
+      const json = await res.json();
+
+      if (json && json.ok) {
+        positions = json.positions || [];
+        balance = Number(json.balance ?? balance);
+      }
+
+      updateUI();
+    } catch (e) {
+      console.warn('State fetch error:', e);
+    }
   }
 
   // ====== UI ======
@@ -191,7 +336,6 @@
     positions.forEach(p => {
       const qty = parseFloat(p.Quantity ?? 0);
       const entryPrice = parseFloat(p.AvgEntryPrice ?? 0);
-
       const currentPrice = prices[p.Symbol] !== undefined ? parseFloat(prices[p.Symbol]) : null;
 
       let pnlHtml = "";
@@ -218,9 +362,8 @@
               Zárás
             </button>
           </div>
-
           <div style="text-align:right;">
-            <div>${qty.toFixed(2)} db</div>
+            <div style="font-weight:600;">${qty.toFixed(2)} db</div>
             <div style="font-size:11px;color:var(--muted);">@ ${entryPrice.toFixed(2)} €</div>
             ${pnlHtml}
           </div>
@@ -230,117 +373,39 @@
     });
   }
 
-  // ====== LEGACY STATE ======
-  function refreshState() {
-    fetch('get_state.php', { cache: "no-store" })
-      .then(r => r.json())
-      .then(data => {
-        if (data.error) { console.error(data.error); return; }
-        balance = parseFloat(data.balance ?? 0);
-        positions = data.positions || [];
-
-        positions.forEach(p => fetchPriceForSymbol(p.Symbol));
-        updateUI();
-      })
-      .catch(console.error);
-  }
-
-  // ====== PRICE FETCH ======
-  async function postTickToLaravel(symbol, price) {
-    // ✅ ezzel építjük a DB-s candle-öket realtime
-    const ts = Math.floor(Date.now() / 1000);
+  async function openPosition(side) {
     try {
-      await fetch(`${API_BASE}/tick/ingest`, {
+      if (!selected) return;
+
+      const qty = parseFloat(qtyInput.value || "0");
+      if (!qty || qty <= 0) { alert("Adj meg mennyiséget."); return; }
+
+      // bid/ask
+      const mid = Number(prices[selected.symbol] || selected.price || 0);
+      if (!mid || mid <= 0) { alert("Nincs ár adat (mid)."); return; }
+
+      const { bid, ask } = getBidAsk(mid);
+      const execPrice = (side === 'BUY') ? ask : bid;
+
+      const res = await fetch('open_position.php', {
         method: 'POST',
-        headers: { 'Content-Type':'application/json' },
-        body: JSON.stringify({ symbol, price, ts, source: 'legacy' }),
-        mode: 'cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol: selected.symbol,
+          quantity: qty,
+          side,
+          price: execPrice
+        })
       });
-    } catch {
-      // ha laravel API épp nem elérhető, nem dőlünk el
+
+      const data = await res.json();
+      if (!data.ok) { alert(data.error || 'Nem sikerült nyitni.'); return; }
+
+      refreshState();
+    } catch (e) {
+      alert(e.message || 'Hiba nyitás közben.');
     }
   }
-
-  function fetchPriceForSymbol(symbol) {
-    fetch('get_price.php?symbol=' + encodeURIComponent(symbol), { cache: "no-store" })
-      .then(r => r.json())
-      .then(async data => {
-        if (!data) return;
-        if (data.ok === false || data.error) return;
-        if (data.price === undefined || data.price === null) return;
-
-        const price = parseFloat(data.price);
-        prices[symbol] = price;
-
-        const asset = assets.find(a => a.symbol === symbol);
-        if (asset) asset.price = price;
-
-        // bal oldali lista ára
-        document.querySelectorAll(`.price[data-symbol="${symbol}"]`).forEach(el => {
-          el.textContent = price.toFixed(2) + " $";
-        });
-
-        // kiválasztott instrument ár frissítése
-        if (selected && selected.symbol === symbol) {
-          selected.price = price;
-          assetPriceEl.textContent = price.toFixed(2) + " $";
-          updateSpreadUI();
-
-          // ✅ csak a selected szimbólumot toljuk tick-re (nem spammeljük az összeset)
-          await postTickToLaravel(symbol, price);
-        }
-
-        updateUI();
-      })
-      .catch(console.error);
-  }
-
-  // ====== TRADING ======
-  buyBtn.onclick = () => {
-    const q = parseInt(qtyInput.value);
-    if (isNaN(q) || q <= 0) { alert("Adj meg egy pozitív mennyiséget!"); return; }
-
-    fetch('open_position.php', {
-      method: 'POST',
-      headers: {'Content-Type':'application/x-www-form-urlencoded'},
-      body: new URLSearchParams({
-        symbol: selected.symbol,
-        asset_name: selected.name,
-        quantity: q,
-        price: getBidAsk(selected.price).ask,
-        side: 'buy'
-      })
-    })
-    .then(r => r.json())
-    .then(data => {
-      if (data.error) { alert(data.error); return; }
-      refreshState();
-    })
-    .catch(console.error);
-  };
-
-  sellBtn.onclick = () => {
-    const q = parseInt(qtyInput.value);
-    if (isNaN(q) || q <= 0) { alert("Adj meg egy pozitív mennyiséget!"); return; }
-
-    fetch('open_position.php', {
-      method: 'POST',
-      headers: {'Content-Type':'application/x-www-form-urlencoded'},
-      body: new URLSearchParams({
-        symbol: selected.symbol,
-        asset_name: selected.name,
-        quantity: q,
-        price: getBidAsk(selected.price).bid,
-        side: 'sell'
-      })
-    })
-    .then(r => r.json())
-    .then(data => {
-      if (data.error) { alert(data.error); return; }
-      refreshState();
-    })
-    .catch(console.error);
-  };
 
   async function closeByAsset(assetId, symbol) {
     try {
@@ -349,7 +414,7 @@
 
       let midPrice = Number(prices[symbol] || 0);
       if (!midPrice || midPrice <= 0) {
-        fetchPriceForSymbol(symbol);
+        await fetchPriceForSymbol(symbol);
         midPrice = Number(prices[symbol] || 0);
       }
       if (!midPrice || midPrice <= 0) { alert("Nem sikerült mid árat lekérni záráshoz."); return; }
@@ -377,9 +442,18 @@
     btn.addEventListener('click', () => {
       tf = btn.dataset.tf;
       setActiveTfButton(tf);
-      fetchCandlesFull();
+
+      // TF váltás: reset cache + új full load
+      candleCache = [];
+      earliestTime = null;
+      latestTime = null;
+
+      fetchCandlesFull().then(() => startChartPolling());
     });
   });
+
+  if (buyBtn) buyBtn.addEventListener('click', () => openPosition('BUY'));
+  if (sellBtn) sellBtn.addEventListener('click', () => openPosition('SELL'));
 
   // ====== BOOT ======
   renderInstruments();
@@ -387,6 +461,4 @@
 
   refreshState();
   setInterval(refreshState, PRICE_POLL_MS);
-
-  fetchCandlesFull().then(() => startChartPolling());
 })();
