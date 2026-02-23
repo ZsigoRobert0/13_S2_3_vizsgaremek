@@ -8,11 +8,10 @@ use Illuminate\Support\Facades\Http;
 
 class BackfillCandles extends Command
 {
-    // EZ A LÉNYEG: most már lesz "candles" namespace és "backfill" command
-    protected $signature = 'candles:backfill 
-        {symbol : Pl. AAPL} 
-        {tf : 1m|5m|15m|1h|1d} 
-        {days=10 : Hány napot töltsön vissza}';
+    protected $signature = 'candles:backfill
+        {symbol : Pl. AAPL}
+        {tf : 1m|5m|15m|1h|1d}
+        {days=30 : Hány napot töltsön vissza}';
 
     protected $description = 'Backfill candles from Finnhub into DB (candles table) with upsert.';
 
@@ -39,12 +38,14 @@ class BackfillCandles extends Command
             return self::FAILURE;
         }
 
-        // chunk méret (Finnhub limit/terhelés miatt)
+        $tfSec = $this->tfToSeconds($tf);
+
+        // Chunkolás Finnhub limit miatt (biztos)
         $chunkDays = match ($tf) {
             '1m'  => 2,
             '5m'  => 7,
             '15m' => 14,
-            '1h'  => 90,
+            '1h'  => 60,
             '1d'  => 3650,
             default => 7,
         };
@@ -52,37 +53,33 @@ class BackfillCandles extends Command
         $toTs   = now()->timestamp;
         $fromTs = now()->subDays($days)->timestamp;
 
-        $this->info("Backfill: {$symbol} tf={$tf} (resolution={$resolution}) days={$days}");
-        $this->info("Range: {$fromTs} -> {$toTs} (unix sec)");
+        $this->info("Backfill: {$symbol} tf={$tf} res={$resolution} days={$days}");
+        $this->info("Range: {$fromTs} -> {$toTs}");
         $this->info("ChunkDays: {$chunkDays}");
 
-        $totalInsertedOrUpdated = 0;
-
-        // időablak darabolása
+        $total = 0;
         $cursorFrom = $fromTs;
+
         while ($cursorFrom < $toTs) {
             $cursorTo = min($toTs, $cursorFrom + ($chunkDays * 86400));
 
             $this->line("Fetch chunk: {$cursorFrom} -> {$cursorTo}");
 
-            $data = $this->fetchFinnhubCandles($apiKey, $symbol, $resolution, $cursorFrom, $cursorTo);
-            if ($data === null) {
-                $this->warn("Chunk: üres/hibás válasz (lehet market zárva vagy limit).");
+            $json = $this->fetchFinnhubCandles($apiKey, $symbol, $resolution, $cursorFrom, $cursorTo);
+            if ($json === null) {
                 $cursorFrom = $cursorTo + 1;
-                usleep(350000); // kis pihi rate limit ellen
+                usleep(450000);
                 continue;
             }
 
-            $rows = $this->transformFinnhubToRows($symbol, $tf, $data);
+            $rows = $this->transformFinnhubToRows($symbol, $tf, $tfSec, $json);
             if (!$rows) {
                 $this->warn("Chunk: 0 candle.");
                 $cursorFrom = $cursorTo + 1;
-                usleep(350000);
+                usleep(450000);
                 continue;
             }
 
-            // Upsert: (symbol, tf, open_ts) unique kulcs alapján
-            // Feltételezett oszlopok: symbol, tf, open_ts, open, high, low, close, volume, created_at, updated_at
             $now = now();
             foreach ($rows as &$r) {
                 $r['created_at'] = $now;
@@ -93,18 +90,17 @@ class BackfillCandles extends Command
             DB::table('candles')->upsert(
                 $rows,
                 ['symbol', 'tf', 'open_ts'],
-                ['open', 'high', 'low', 'close', 'volume', 'updated_at']
+                ['close_ts', 'open', 'high', 'low', 'close', 'ticks', 'updated_at']
             );
 
-            $totalInsertedOrUpdated += count($rows);
-
-            $this->info("Upserted: " . count($rows) . " rows (running total: {$totalInsertedOrUpdated})");
+            $total += count($rows);
+            $this->info("Upserted: " . count($rows) . " (running total: {$total})");
 
             $cursorFrom = $cursorTo + 1;
-            usleep(350000);
+            usleep(450000);
         }
 
-        $this->info("DONE. Total processed candles: {$totalInsertedOrUpdated}");
+        $this->info("DONE. Total processed candles: {$total}");
         return self::SUCCESS;
     }
 
@@ -120,49 +116,59 @@ class BackfillCandles extends Command
         };
     }
 
-    private function fetchFinnhubCandles(string $apiKey, string $symbol, string $resolution, int $from, int $to): ?array
-{
-    $resp = Http::timeout(20)
-        ->retry(2, 300)
-        ->acceptJson()
-        ->get('https://finnhub.io/api/v1/stock/candle', [
-            'symbol'     => $symbol,
-            'resolution' => $resolution,
-            'from'       => $from,
-            'to'         => $to,
-            'token'      => $apiKey,
-        ]);
-
-    // Itt a lényeg: ne dobjon, hanem mondja meg mi a baj
-    if (!$resp->ok()) {
-        $this->error("Finnhub HTTP STATUS: " . $resp->status());
-        $this->error("Finnhub BODY (first 500): " . substr($resp->body(), 0, 500));
-        return null;
-    }
-
-    $json = $resp->json();
-    if (!is_array($json)) {
-        $this->error("Finnhub: nem JSON válasz. BODY (first 200): " . substr($resp->body(), 0, 200));
-        return null;
-    }
-
-    if (($json['s'] ?? null) !== 'ok') {
-        $this->warn("Finnhub s != ok: " . json_encode($json));
-        return null;
-    }
-
-    return $json;
-}
-
-    private function transformFinnhubToRows(string $symbol, string $tf, array $json): array
+    private function tfToSeconds(string $tf): int
     {
-        // Finnhub tömbök: t,o,h,l,c,v
+        return match ($tf) {
+            '1m'  => 60,
+            '5m'  => 300,
+            '15m' => 900,
+            '1h'  => 3600,
+            '1d'  => 86400,
+            default => 60,
+        };
+    }
+
+    private function fetchFinnhubCandles(string $apiKey, string $symbol, string $resolution, int $from, int $to): ?array
+    {
+        $resp = Http::timeout(25)
+            ->retry(2, 400)
+            ->acceptJson()
+            ->get('https://finnhub.io/api/v1/stock/candle', [
+                'symbol'     => $symbol,
+                'resolution' => $resolution,
+                'from'       => $from,
+                'to'         => $to,
+                'token'      => $apiKey,
+            ]);
+
+        if (!$resp->ok()) {
+            $this->error("Finnhub HTTP STATUS: " . $resp->status());
+            $this->error("Finnhub BODY (first 400): " . substr($resp->body(), 0, 400));
+            return null;
+        }
+
+        $json = $resp->json();
+        if (!is_array($json)) {
+            $this->error("Finnhub: nem JSON válasz. BODY (first 200): " . substr($resp->body(), 0, 200));
+            return null;
+        }
+
+        // Finnhub: s = ok / no_data
+        if (($json['s'] ?? null) !== 'ok') {
+            $this->warn("Finnhub s != ok: " . json_encode($json));
+            return null;
+        }
+
+        return $json;
+    }
+
+    private function transformFinnhubToRows(string $symbol, string $tf, int $tfSec, array $json): array
+    {
         $t = $json['t'] ?? [];
         $o = $json['o'] ?? [];
         $h = $json['h'] ?? [];
         $l = $json['l'] ?? [];
         $c = $json['c'] ?? [];
-        $v = $json['v'] ?? [];
 
         if (!is_array($t) || count($t) === 0) return [];
 
@@ -172,15 +178,23 @@ class BackfillCandles extends Command
             $openTs = (int)($t[$i] ?? 0);
             if ($openTs <= 0) continue;
 
+            $open  = (float)($o[$i] ?? 0);
+            $high  = (float)($h[$i] ?? 0);
+            $low   = (float)($l[$i] ?? 0);
+            $close = (float)($c[$i] ?? 0);
+
+            if (!is_finite($open) || !is_finite($high) || !is_finite($low) || !is_finite($close)) continue;
+
             $rows[] = [
-                'symbol'  => $symbol,
-                'tf'      => $tf,
-                'open_ts' => $openTs,
-                'open'    => (float)($o[$i] ?? 0),
-                'high'    => (float)($h[$i] ?? 0),
-                'low'     => (float)($l[$i] ?? 0),
-                'close'   => (float)($c[$i] ?? 0),
-                'volume'  => (float)($v[$i] ?? 0),
+                'symbol'   => $symbol,
+                'tf'       => $tf,
+                'open_ts'  => $openTs,
+                'close_ts' => $openTs + $tfSec - 1,
+                'open'     => $open,
+                'high'     => $high,
+                'low'      => $low,
+                'close'    => $close,
+                'ticks'    => 1, // backfillből jön, nem tick-aggregáció
             ];
         }
 

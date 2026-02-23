@@ -360,7 +360,7 @@ function renderInstruments(filter = "") {
     `;
     d.onclick = () => selectAsset(a);
     instContainer.appendChild(d);
-    fetchPriceForSymbol(a.symbol);
+   // fetchPriceForSymbol(a.symbol);     túlterhelődik ha benthagyom!
   });
 }
 
@@ -377,7 +377,12 @@ function selectAsset(a) {
   updateSpreadUI();
 
   // chart reload
-  loadChartForSelected(true);
+
+  fetchPriceForSymbol(a.symbol, { ingest: true, ingestEveryMs: 0 });
+  setTimeout(() => fetchPriceForSymbol(a.symbol, { ingest: true, ingestEveryMs: 0 }), 800);
+  setTimeout(() => fetchPriceForSymbol(a.symbol, { ingest: true, ingestEveryMs: 0 }), 1600);
+
+  setTimeout(() => loadChartForSelected(true), 2500);
 }
 
 function updateUI(){
@@ -443,20 +448,29 @@ function refreshState() {
     .catch(console.error);
 }
 
-// --- tick ingest throttle (NE terheljük szét) ---
-const _lastIngestAt = {}; // symbol -> ms timestamp
+// --- tick ingest throttle ---
+const _lastIngestAt = {}; // symbol -> ms
+const _lastPriceAt  = {}; // symbol -> ms
 
-function fetchPriceForSymbol(symbol) {
+function fetchPriceForSymbol(symbol, opts = {}) {
   const now = Date.now();
+  const ingest = opts.ingest === true;
 
-  // ingest csak a kiválasztott instrumentre
-  const shouldIngest = (selected && selected.symbol === symbol);
+  // price poll throttle (ne hívjuk túl sűrűn ugyanarra)
+  const priceEveryMs = opts.priceEveryMs ?? 4000;
+  if (!ingest) {
+    if (_lastPriceAt[symbol] && (now - _lastPriceAt[symbol] < priceEveryMs)) return;
+    _lastPriceAt[symbol] = now;
+  }
 
-  // max ~1 ingest / 5 sec / symbol (ne rate limiteljük a Laravel API-t)
-  const canIngest = shouldIngest && (!(_lastIngestAt[symbol]) || (now - _lastIngestAt[symbol] >= 5000));
+  // ingest throttle (külön)
+  const ingestEveryMs = opts.ingestEveryMs ?? 5000;
+  if (ingest) {
+    if (_lastIngestAt[symbol] && (now - _lastIngestAt[symbol] < ingestEveryMs)) return;
+    _lastIngestAt[symbol] = now;
+  }
 
-  const ingestParam = canIngest ? "&ingest=1" : "";
-
+  const ingestParam = ingest ? "&ingest=1" : "";
   fetch('./get_price.php?symbol=' + encodeURIComponent(symbol) + ingestParam, { cache: "no-store" })
     .then(r => r.json())
     .then(data => {
@@ -465,6 +479,7 @@ function fetchPriceForSymbol(symbol) {
 
       if (data.price === undefined || data.price === null) return;
       const price = parseFloat(data.price);
+      if (!Number.isFinite(price)) return;
 
       prices[symbol] = price;
 
@@ -478,9 +493,6 @@ function fetchPriceForSymbol(symbol) {
       if (selected && selected.symbol === symbol) {
         selected.price = price;
         assetPriceEl.textContent = price.toFixed(2) + " $";
-
-        // ha most ingesteltünk, jegyezzük fel
-        if (canIngest) _lastIngestAt[symbol] = now;
       }
 
       updateUI();
@@ -870,6 +882,62 @@ document.querySelectorAll('.btn[data-tf]').forEach(btn => {
   });
 });
 
+function getVisibleSymbolsInSidebar(max = 25) {
+  // Csak a DOM-ban látszó (renderelt) elemekből (gyors és stabil)
+  const els = Array.from(document.querySelectorAll('.price[data-symbol]'));
+  const out = [];
+  for (const el of els) {
+    const sym = el.getAttribute('data-symbol');
+    if (!sym) continue;
+    out.push(sym);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+let _rrIndex = 0;
+
+function startBackgroundPriceAndIngestLoops() {
+  // 1) Selected + positions: sűrű ingest
+  setInterval(() => {
+    try {
+      if (selected?.symbol) {
+        fetchPriceForSymbol(selected.symbol, { ingest: true, ingestEveryMs: 5000 });
+      }
+      if (Array.isArray(positions)) {
+        for (const p of positions) {
+          const sym = p.Symbol;
+          if (sym && sym !== selected?.symbol) {
+            fetchPriceForSymbol(sym, { ingest: true, ingestEveryMs: 10000 });
+          }
+        }
+      }
+    } catch (e) {}
+  }, 2000);
+
+  // 2) Sidebar látható elemek: árfrissítés + ritkább ingest (hogy legyen candle-jük)
+  setInterval(() => {
+    const visibleSyms = getVisibleSymbolsInSidebar(25);
+    for (const sym of visibleSyms) {
+      const doIngest = (sym === selected?.symbol) ? true : false;
+      fetchPriceForSymbol(sym, { ingest: doIngest, priceEveryMs: 5000, ingestEveryMs: 7000 });
+    }
+  }, 3000);
+
+  // 3) Round-robin ingest az összes tradable-re (lassan, API limitbarát)
+  // ~50 request / perc -> még éppen élhető (ha Finnhub free, 60/min környéke)
+  setInterval(() => {
+    if (!assets || assets.length === 0) return;
+    _rrIndex = (_rrIndex + 1) % assets.length;
+    const sym = assets[_rrIndex]?.symbol;
+    if (!sym) return;
+
+    // Ne duplázzuk a kiválasztottat itt, azt a sűrű loop kezeli
+    if (selected?.symbol && sym === selected.symbol) return;
+
+    fetchPriceForSymbol(sym, { ingest: true, ingestEveryMs: 60000 });
+  }, 1200);
+}
 
 // INIT
 renderInstruments();
@@ -883,6 +951,8 @@ if (selected) {
 
 refreshState();
 setInterval(refreshState, 2000);
+startBackgroundPriceAndIngestLoops();
+
 
 </script>
 
