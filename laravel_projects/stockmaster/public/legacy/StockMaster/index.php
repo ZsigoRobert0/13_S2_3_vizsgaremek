@@ -443,8 +443,21 @@ function refreshState() {
     .catch(console.error);
 }
 
+// --- tick ingest throttle (NE terheljük szét) ---
+const _lastIngestAt = {}; // symbol -> ms timestamp
+
 function fetchPriceForSymbol(symbol) {
-  fetch('./get_price.php?symbol=' + encodeURIComponent(symbol), { cache: "no-store" })
+  const now = Date.now();
+
+  // ingest csak a kiválasztott instrumentre
+  const shouldIngest = (selected && selected.symbol === symbol);
+
+  // max ~1 ingest / 5 sec / symbol (ne rate limiteljük a Laravel API-t)
+  const canIngest = shouldIngest && (!(_lastIngestAt[symbol]) || (now - _lastIngestAt[symbol] >= 5000));
+
+  const ingestParam = canIngest ? "&ingest=1" : "";
+
+  fetch('./get_price.php?symbol=' + encodeURIComponent(symbol) + ingestParam, { cache: "no-store" })
     .then(r => r.json())
     .then(data => {
       if (!data) return;
@@ -465,6 +478,9 @@ function fetchPriceForSymbol(symbol) {
       if (selected && selected.symbol === symbol) {
         selected.price = price;
         assetPriceEl.textContent = price.toFixed(2) + " $";
+
+        // ha most ingesteltünk, jegyezzük fel
+        if (canIngest) _lastIngestAt[symbol] = now;
       }
 
       updateUI();
