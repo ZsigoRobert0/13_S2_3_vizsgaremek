@@ -1,328 +1,324 @@
 (() => {
-  const boot = window.__STOCKMASTER_BOOT__ || { assets: [], demoBalance: 0 };
+  const boot = window.__STOCKMASTER_BOOT__ || {};
+  const API_BASE = boot.apiBase || "/api";
 
   // ====== CONFIG ======
-  const API_BASE = 'http://127.0.0.1:8000/api';   // Laravel API
   const SPREAD = 0.05;
   const HALF_SPREAD = SPREAD / 2;
 
-  const PRICE_POLL_MS = 2000;   // legacy state refresh
-  const CHART_POLL_MS = 4000;   // candle refresh
+  const STATE_POLL_MS = 2000;
 
-  // History/backfill beállítások
-  const INITIAL_CANDLE_LIMIT = 1500; // több adat -> kevesebb "üres mező"
-  const HISTORY_PAGE_LIMIT = 1500;   // ennyit töltünk, amikor balra húzol
-  const HISTORY_THRESHOLD_BARS = 60; // ha ennyire közel érsz a bal széléhez -> loadMore
+  // ár frissítés: csak látható + selected + positions
+  const VISIBLE_PRICE_POLL_MS = 2500;
+  const SELECTED_INGEST_MS = 5000;
+  const POSITIONS_INGEST_MS = 12000;
 
-  const TF_SEC = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '1d': 86400 };
+  // chart
+  const REALTIME_MS = 4500;
+  const REALTIME_LIMIT = 80;
 
-  // ====== STATE ======
-  const assets = (boot.assets || []).map(a => ({ ...a, price: 0 }));
-  const prices = {};     // symbol -> mid
-  let selected = assets[0] || null;
-  let positions = [];
-  let balance = Number(boot.demoBalance || 0);
-  let tf = '1m';
+  // assets cache
+  const ASSETS_CACHE_KEY = "sm_assets_cache_v1";
+  const ASSETS_CACHE_TTL_MS = 5 * 60 * 1000;
 
-  // Chart cache (history + realtime merge)
-  let candleCache = [];
-  let earliestTime = null;
-  let latestTime = null;
-  let isLoadingHistory = false;
+  // price flood védelem
+  const PRICE_FETCH_TIMEOUT_MS = 1500;
+  const PRICE_CONCURRENCY = 6;
 
   // ====== DOM ======
+  const elUsername = document.getElementById("username");
   const bidVal = document.getElementById("bidVal");
   const askVal = document.getElementById("askVal");
   const instContainer = document.getElementById("instruments");
   const positionsEl = document.getElementById("positions");
   const balanceEl = document.getElementById("balance");
   const balanceMini = document.getElementById("balance-mini");
+
   const qtyInput = document.getElementById("qty");
   const buyBtn = document.getElementById("buyBtn");
   const sellBtn = document.getElementById("sellBtn");
+
   const assetTitleEl = document.getElementById("asset-title");
   const assetPriceEl = document.getElementById("asset-price");
   const searchInput = document.getElementById("search");
-  const chartHint = document.getElementById("chartHint");
+
+  const chartEl = document.getElementById("chart");
+  const chartOverlay = document.getElementById("chartOverlay");
+
+  if (elUsername) elUsername.textContent = boot.username || "";
+
+  // ====== STATE ======
+  let assets = [];      // {symbol,name,price}
+  const prices = {};    // symbol -> mid
+  let selected = null;
+
+  let positions = [];
+  let balance = Number(boot.demoBalance || 0);
+
+  // click védelem
+  let tradeBusy = false;
+  const closeBusy = new Set();
+
+  // settings
+  const SETTINGS = {
+    loaded: false,
+    userId: Number(boot.userId || 1),
+    chart_interval: "1m",
+    chart_limit_initial: 1500,
+    chart_backfill_chunk: 1500,
+    chart_theme: "dark",
+  };
 
   // ====== HELPERS ======
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
   function getBidAsk(midPrice) {
     const mid = Number(midPrice || 0);
     return { bid: mid - HALF_SPREAD, ask: mid + HALF_SPREAD };
   }
 
   function updateSpreadUI() {
-    if (!selected || !selected.price) { bidVal.textContent = "—"; askVal.textContent = "—"; return; }
+    if (!selected || !selected.price) {
+      bidVal.textContent = "—";
+      askVal.textContent = "—";
+      return;
+    }
     const { bid, ask } = getBidAsk(selected.price);
     bidVal.textContent = bid.toFixed(2) + " $";
     askVal.textContent = ask.toFixed(2) + " $";
   }
 
-  function setActiveTfButton(newTf) {
-    document.querySelectorAll('.tf-row .btn').forEach(b => {
-      b.classList.toggle('active', b.dataset.tf === newTf);
+  function setOverlay(text) {
+    if (!chartOverlay) return;
+    chartOverlay.textContent = text || "";
+    chartOverlay.style.display = text ? "flex" : "none";
+  }
+
+  function setActiveTfButton(tf) {
+    document.querySelectorAll(".btn[data-tf]").forEach(b => b.classList.toggle("active", b.dataset.tf === tf));
+  }
+
+  function applyThemeFromSettings() {
+    const theme = String(SETTINGS.chart_theme || "dark").toLowerCase();
+    document.body.setAttribute("data-theme", theme === "light" ? "light" : "dark");
+  }
+
+  function escapeHtml(s) {
+    return String(s ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+  function escapeAttr(s) { return escapeHtml(s); }
+
+  function cssEscape(str) {
+    return String(str).replaceAll('"', '\\"');
+  }
+
+  function setTradeButtonsDisabled(disabled) {
+    if (buyBtn) buyBtn.disabled = !!disabled;
+    if (sellBtn) sellBtn.disabled = !!disabled;
+  }
+
+  // ====== API: settings ======
+  async function apiGetSettings(userId) {
+    const res = await fetch(`${API_BASE}/settings?user_id=${encodeURIComponent(userId)}`, {
+      headers: { "Accept": "application/json" },
+      cache: "no-store",
     });
-  }
-
-  function normalizeCandles(arr) {
-    return (arr || []).map(c => ({
-      time: Number(c.time),
-      open: Number(c.open),
-      high: Number(c.high),
-      low: Number(c.low),
-      close: Number(c.close),
-    })).filter(c =>
-      Number.isFinite(c.time) &&
-      Number.isFinite(c.open) &&
-      Number.isFinite(c.high) &&
-      Number.isFinite(c.low) &&
-      Number.isFinite(c.close)
-    ).sort((a, b) => a.time - b.time);
-  }
-
-  function mergeUnique(oldArr, newArr) {
-    const m = new Map();
-    for (const c of oldArr) m.set(c.time, c);
-    for (const c of newArr) m.set(c.time, c);
-    return Array.from(m.values()).sort((a, b) => a.time - b.time);
-  }
-
-  // ====== CHART (Lightweight Charts) ======
-  const proChartEl = document.getElementById('proChart');
-  const chart = LightweightCharts.createChart(proChartEl, {
-    layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#cbd5e1' },
-    grid: { vertLines: { color: 'rgba(148,163,184,0.08)' }, horzLines: { color: 'rgba(148,163,184,0.08)' } },
-    timeScale: {
-      timeVisible: true,
-      secondsVisible: false,
-      rightOffset: 6,     // “lélegzet” jobb oldalt
-      barSpacing: 10,     // ne legyen üresnek érzés
-    },
-    rightPriceScale: { borderColor: 'rgba(148,163,184,0.15)' },
-    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-  });
-
-  const series = chart.addCandlestickSeries({
-    upColor: '#22c55e',
-    downColor: '#ef4444',
-    borderUpColor: '#22c55e',
-    borderDownColor: '#ef4444',
-    wickUpColor: '#22c55e',
-    wickDownColor: '#ef4444',
-  });
-
-  function resizeChart() {
-    if (!proChartEl) return;
-    chart.applyOptions({ width: proChartEl.clientWidth, height: proChartEl.clientHeight });
-  }
-  window.addEventListener('resize', resizeChart);
-  resizeChart();
-
-  // 🔥 Backfill trigger: ha balra húzol és közel vagy a legrégebbi candle-höz -> töltsünk még
-  chart.timeScale().subscribeVisibleTimeRangeChange(async (range) => {
-    if (!range || !selected || !earliestTime || isLoadingHistory) return;
-
-    const threshold = (TF_SEC[tf] || 60) * HISTORY_THRESHOLD_BARS;
-    if (range.from <= earliestTime + threshold) {
-      await loadMoreHistory().catch(() => {});
-    }
-  });
-
-  async function fetchCandles({ symbol, tf, limit, from = null, to = null }) {
-    const qs = new URLSearchParams();
-    qs.set('symbol', symbol);
-    qs.set('tf', tf);
-    qs.set('limit', String(limit));
-    if (from !== null) qs.set('from', String(from));
-    if (to !== null) qs.set('to', String(to));
-
-    const url = `${API_BASE}/candles?${qs.toString()}`;
-
-    const res = await fetch(url, { cache: 'no-store', mode: 'cors' });
     const json = await res.json();
-    if (!json.ok) throw new Error(json.error || 'Candles API error');
-    return normalizeCandles(json.candles || []);
+    if (!res.ok || !json.ok) throw new Error(json?.error || "settings_get_failed");
+    return json.data;
   }
 
-  async function fetchCandlesFull() {
-    if (!selected) return;
+  async function apiUpdateSettings(payload) {
+    const res = await fetch(`${API_BASE}/settings`, {
+      method: "POST",
+      headers: { "Accept": "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const json = await res.json();
+    if (!res.ok || !json.ok) throw new Error(json?.error || "settings_update_failed");
+    return json.data;
+  }
 
+  async function loadSettingsOrFallback() {
     try {
-      const data = await fetchCandles({
-        symbol: selected.symbol,
-        tf,
-        limit: INITIAL_CANDLE_LIMIT,
-      });
-
-      candleCache = data;
-      earliestTime = data.length ? data[0].time : null;
-      latestTime = data.length ? data[data.length - 1].time : null;
-
-      series.setData(candleCache);
-      chart.timeScale().fitContent();
-
-      if (chartHint) chartHint.style.display = data.length ? 'none' : 'flex';
-      if (chartHint && !data.length) chartHint.textContent = 'Nincs adat ehhez a symbol-hoz (ingest kell).';
+      const s = await apiGetSettings(SETTINGS.userId);
+      Object.assign(SETTINGS, s, { loaded: true });
     } catch (e) {
-      console.warn('Candles fetch error:', e);
-      if (chartHint) {
-        chartHint.style.display = 'flex';
-        chartHint.textContent = 'Chart hiba / API nem elérhető';
-      }
+      console.warn("Settings load failed, using defaults:", e);
+      SETTINGS.loaded = false;
     }
+    applyThemeFromSettings();
   }
 
-  async function loadMoreHistory() {
-    if (!selected || !earliestTime) return;
-    if (isLoadingHistory) return;
-
-    isLoadingHistory = true;
+  // ====== API: assets (cache) ======
+  function readAssetsCache() {
     try {
-      // megőrizzük a jelenlegi nézetet, hogy ne “ugorjon” a chart
-      const prevRange = chart.timeScale().getVisibleRange();
-
-      const older = await fetchCandles({
-        symbol: selected.symbol,
-        tf,
-        limit: HISTORY_PAGE_LIMIT,
-        to: earliestTime - 1,
-      });
-
-      if (!older.length) return;
-
-      candleCache = mergeUnique(candleCache, older);
-      earliestTime = candleCache[0].time;
-      latestTime = candleCache[candleCache.length - 1].time;
-
-      series.setData(candleCache);
-
-      // visszaállítjuk a nézetet (ne rántsa el a kamera a frissen betöltött adatok miatt)
-      if (prevRange) chart.timeScale().setVisibleRange(prevRange);
-
-      if (chartHint) chartHint.style.display = 'none';
-    } catch (e) {
-      console.warn('History load error:', e);
-    } finally {
-      isLoadingHistory = false;
-    }
-  }
-
-  async function fetchCandlesLast() {
-    if (!selected) return;
-    try {
-      // last pár bar: merge + setData (stabilabb, mint csak update)
-      const last = await fetchCandles({
-        symbol: selected.symbol,
-        tf,
-        limit: 15,
-      });
-      if (!last.length) return;
-
-      candleCache = mergeUnique(candleCache, last);
-      earliestTime = candleCache[0].time;
-      latestTime = candleCache[candleCache.length - 1].time;
-
-      series.setData(candleCache);
-      if (chartHint) chartHint.style.display = 'none';
+      const raw = localStorage.getItem(ASSETS_CACHE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed?.ts || !Array.isArray(parsed?.data)) return null;
+      if ((Date.now() - parsed.ts) > ASSETS_CACHE_TTL_MS) return null;
+      return parsed.data;
     } catch {
-      // csendben
+      return null;
     }
   }
 
-  let chartTimer = null;
-  function startChartPolling() {
-    if (chartTimer) clearInterval(chartTimer);
-    chartTimer = setInterval(fetchCandlesLast, CHART_POLL_MS);
+  function writeAssetsCache(list) {
+    try {
+      localStorage.setItem(ASSETS_CACHE_KEY, JSON.stringify({ ts: Date.now(), data: list }));
+    } catch {}
   }
 
-  // ====== INSTRUMENT LIST ======
-  function renderInstruments(filter = "") {
+  function setAssets(list) {
+    assets = (list || []).map(x => ({
+      symbol: x.symbol,
+      name: x.name,
+      price: prices[x.symbol] ?? 0,
+    }));
+  }
+
+  async function apiGetAssets(search = "", limit = 500, signal) {
+    const params = new URLSearchParams();
+    if (search && search.trim()) params.set("search", search.trim());
+    params.set("limit", String(limit));
+    params.set("tradable", "1");
+
+    const res = await fetch(`${API_BASE}/assets?${params.toString()}`, {
+      headers: { "Accept": "application/json" },
+      cache: "no-store",
+      signal,
+    });
+    const json = await res.json();
+    if (!res.ok || !json.ok) throw new Error(json?.error || "assets_get_failed");
+    return Array.isArray(json.data) ? json.data : [];
+  }
+
+  // ====== UI: instruments ======
+  function renderInstruments(filterTerm = "") {
+    const term = (filterTerm || "").trim().toLowerCase();
     instContainer.innerHTML = "";
-    const term = filter.trim().toLowerCase();
 
     const list = assets.filter(a => {
       if (!term) return true;
-      const sym = a.symbol.toLowerCase();
-      const name = (a.name || "").toLowerCase();
-      return sym.includes(term) || name.includes(term);
+      return a.symbol.toLowerCase().includes(term) || (a.name || "").toLowerCase().includes(term);
     });
 
-    list.forEach(a => {
+    if (!list.length) {
+      instContainer.innerHTML = `<div class="muted small pad">Nincs találat.</div>`;
+      return;
+    }
+
+    for (const a of list) {
       const d = document.createElement("div");
       d.className = "instrument";
       d.innerHTML = `
         <div class="instrument-main">
-          <div class="instrument-name">${a.name}</div>
-          <div class="instrument-symbol">${a.symbol}</div>
+          <div class="instrument-name">${escapeHtml(a.name)}</div>
+          <div class="instrument-symbol">${escapeHtml(a.symbol)}</div>
         </div>
-        <div class="price" data-symbol="${a.symbol}">…</div>
+        <div class="price" data-symbol="${escapeAttr(a.symbol)}">${a.price ? a.price.toFixed(2) + " $" : "…"}</div>
       `;
-      d.onclick = () => selectAsset(a);
+      d.onclick = () => selectAsset(a.symbol);
       instContainer.appendChild(d);
-
-      fetchPriceForSymbol(a.symbol);
-    });
+    }
   }
 
-  // ====== SELECT ASSET ======
-  function selectAsset(a) {
-    selected = a;
-
-    // reset chart cache instrument váltáskor
-    candleCache = [];
-    earliestTime = null;
-    latestTime = null;
-
-    assetTitleEl.textContent = `${a.symbol} — ${a.name}`;
-    assetPriceEl.textContent = (a.price ? a.price.toFixed(2) : "…") + " $";
-
-    updateSpreadUI();
-    fetchCandlesFull().then(() => startChartPolling());
+  // ====== fetch helpers ======
+  async function fetchJson(url, opts = {}) {
+    const res = await fetch(url, opts);
+    const json = await res.json().catch(() => ({}));
+    return { res, json };
   }
 
-  // ====== PRICE (legacy get_price.php) ======
-  async function fetchPriceForSymbol(symbol) {
+  // ====== LEGACY price + ingest (get_price.php) — flood védelem ======
+  const _lastPriceAt = {};
+  const _lastIngestAt = {};
+  const _inFlight = new Set();
+
+  let _priceInFlight = 0;
+  const _priceQueue = [];
+  async function withPriceSlot(fn) {
+    if (_priceInFlight >= PRICE_CONCURRENCY) {
+      await new Promise(r => _priceQueue.push(r));
+    }
+    _priceInFlight++;
+    try { return await fn(); }
+    finally {
+      _priceInFlight--;
+      const r = _priceQueue.shift();
+      if (r) r();
+    }
+  }
+
+  async function fetchPriceForSymbol(symbol, { ingest = false, priceEveryMs = 4000, ingestEveryMs = 5000 } = {}) {
+    const now = Date.now();
+
+    if (!symbol) return;
+
+    if (!ingest) {
+      if (_lastPriceAt[symbol] && (now - _lastPriceAt[symbol] < priceEveryMs)) return;
+      _lastPriceAt[symbol] = now;
+    } else {
+      if (_lastIngestAt[symbol] && (now - _lastIngestAt[symbol] < ingestEveryMs)) return;
+      _lastIngestAt[symbol] = now;
+    }
+
+    const key = (ingest ? "i:" : "p:") + symbol;
+    if (_inFlight.has(key)) return;
+    _inFlight.add(key);
+
+    const ingestParam = ingest ? "&ingest=1" : "";
+    const url = `./get_price.php?symbol=${encodeURIComponent(symbol)}${ingestParam}`;
+
     try {
-      const res = await fetch(`get_price.php?symbol=${encodeURIComponent(symbol)}`, { cache: 'no-store' });
-      const json = await res.json();
-      if (!json || typeof json.price === 'undefined') return;
+      await withPriceSlot(async () => {
+        const ac = new AbortController();
+        const t = setTimeout(() => ac.abort(), PRICE_FETCH_TIMEOUT_MS);
 
-      const mid = Number(json.price);
-      prices[symbol] = mid;
+        try {
+          const { res, json } = await fetchJson(url, { cache: "no-store", signal: ac.signal });
+          clearTimeout(t);
 
-      const a = assets.find(x => x.symbol === symbol);
-      if (a) a.price = mid;
+          if (!res.ok) return;
+          if (!json || json.ok === false || json.error) return;
+          if (json.price === undefined || json.price === null) return;
 
-      const priceEl = instContainer.querySelector(`.price[data-symbol="${symbol}"]`);
-      if (priceEl) priceEl.textContent = mid.toFixed(2) + " $";
+          const mid = Number.parseFloat(json.price);
+          if (!Number.isFinite(mid)) return;
 
-      if (selected && selected.symbol === symbol) {
-        assetPriceEl.textContent = mid.toFixed(2) + " $";
-        updateSpreadUI();
-      }
-    } catch {
-      // ha Finnhub nincs, maradhat "—"
+          prices[symbol] = mid;
+
+          // assets tömb frissítése
+          const a = assets.find(x => x.symbol === symbol);
+          if (a) a.price = mid;
+
+          // sidebar price update
+          document.querySelectorAll(`.price[data-symbol="${cssEscape(symbol)}"]`).forEach(el => {
+            el.textContent = mid.toFixed(2) + " $";
+          });
+
+          // header update
+          if (selected && selected.symbol === symbol) {
+            selected.price = mid;
+            assetPriceEl.textContent = mid.toFixed(2) + " $";
+            updateSpreadUI();
+          }
+        } catch {
+          clearTimeout(t);
+        }
+      });
+    } finally {
+      _inFlight.delete(key);
     }
   }
 
   // ====== STATE (positions / balance) ======
-  async function refreshState() {
-    try {
-      const res = await fetch('get_state.php', { cache: 'no-store' });
-      const json = await res.json();
-
-      if (json && json.ok) {
-        positions = json.positions || [];
-        balance = Number(json.balance ?? balance);
-      }
-
-      updateUI();
-    } catch (e) {
-      console.warn('State fetch error:', e);
-    }
-  }
-
-  // ====== UI ======
   function updateUI() {
     balanceEl.textContent = balance.toFixed(2) + " €";
     balanceMini.textContent = balanceEl.textContent;
@@ -334,18 +330,20 @@
     }
 
     positions.forEach(p => {
-      const qty = parseFloat(p.Quantity ?? 0);
-      const entryPrice = parseFloat(p.AvgEntryPrice ?? 0);
-      const currentPrice = prices[p.Symbol] !== undefined ? parseFloat(prices[p.Symbol]) : null;
+      const qtySigned = parseFloat(p.Quantity ?? 0);
+      const qtyAbs = Math.abs(qtySigned);
+      const isShort = qtySigned < 0;
 
-      let pnlHtml = "";
-      if (currentPrice !== null && entryPrice > 0 && qty > 0) {
-        const pnlValue = (currentPrice - entryPrice) * qty;
-        const pnlPct = ((currentPrice - entryPrice) / entryPrice) * 100;
-        const pnlClass = pnlValue >= 0 ? "pnl-positive" : "pnl-negative";
-        pnlHtml = `<div class="pnl ${pnlClass}">${pnlValue.toFixed(2)} € (${pnlPct.toFixed(2)}%)</div>`;
-      } else {
-        pnlHtml = `<div class="pnl pnl-neutral">PnL: …</div>`;
+      const entry = parseFloat(p.AvgEntryPrice ?? 0);
+      const sym = String(p.Symbol ?? "");
+      const name = String(p.Name ?? "");
+      const current = (prices[sym] !== undefined) ? parseFloat(prices[sym]) : null;
+
+      let pnlHtml = `<div class="pnl pnl-neutral">PnL: …</div>`;
+      if (current !== null && entry > 0 && qtyAbs > 0) {
+        const pnlVal = isShort ? (entry - current) * qtyAbs : (current - entry) * qtyAbs;
+        const pnlPct = isShort ? ((entry - current) / entry) * 100 : ((current - entry) / entry) * 100;
+        pnlHtml = `<div class="pnl ${pnlVal >= 0 ? "pnl-positive" : "pnl-negative"}">${pnlVal.toFixed(2)} € (${pnlPct.toFixed(2)}%)</div>`;
       }
 
       const item = document.createElement("div");
@@ -353,112 +351,540 @@
       item.innerHTML = `
         <div style="display:flex; justify-content:space-between; gap:10px; width:100%;">
           <div>
-            <div style="font-weight:600;">${p.Symbol}</div>
-            <div style="font-size:11px;color:var(--muted);">${p.Name}</div>
-
+            <div style="font-weight:600;">${escapeHtml(sym)} ${isShort ? "<span style='color:var(--muted);font-size:11px'>(SHORT)</span>" : ""}</div>
+            <div style="font-size:11px;color:var(--muted);">${escapeHtml(name)}</div>
             <button type="button"
               style="margin-top:6px;padding:6px 10px;border-radius:10px;border:0;cursor:pointer; position:relative; z-index:5;"
-              onclick="closeByAsset(${Number(p.AssetID)}, '${String(p.Symbol).replace(/'/g, "\\'")}')">
-              Zárás
-            </button>
+              data-assetid="${Number(p.AssetID)}"
+              data-symbol="${escapeAttr(sym)}"
+            >Zárás</button>
           </div>
           <div style="text-align:right;">
-            <div style="font-weight:600;">${qty.toFixed(2)} db</div>
-            <div style="font-size:11px;color:var(--muted);">@ ${entryPrice.toFixed(2)} €</div>
+            <div>${qtyAbs.toFixed(2)} db</div>
+            <div style="font-size:11px;color:var(--muted);">@ ${entry.toFixed(2)} €</div>
             ${pnlHtml}
           </div>
         </div>
       `;
+
+      const btn = item.querySelector("button");
+      btn?.addEventListener("click", () => closeByAsset(Number(p.AssetID), sym, btn));
+
       positionsEl.appendChild(item);
     });
   }
 
-  async function openPosition(side) {
+  async function refreshState() {
     try {
-      if (!selected) return;
+      const userId = Number(SETTINGS.userId || boot.userId || 0);
+      const { res, json } = await fetchJson(`/api/state?user_id=${userId}`, { cache: "no-store" });
+      if (!res.ok || !json?.ok) return;
 
-      const qty = parseFloat(qtyInput.value || "0");
-      if (!qty || qty <= 0) { alert("Adj meg mennyiséget."); return; }
+      balance = parseFloat(json.balance ?? balance);
+      positions = json.positions || [];
 
-      // bid/ask
-      const mid = Number(prices[selected.symbol] || selected.price || 0);
-      if (!mid || mid <= 0) { alert("Nincs ár adat (mid)."); return; }
-
-      const { bid, ask } = getBidAsk(mid);
-      const execPrice = (side === 'BUY') ? ask : bid;
-
-      const res = await fetch('open_position.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          symbol: selected.symbol,
-          quantity: qty,
-          side,
-          price: execPrice
-        })
-      });
-
-      const data = await res.json();
-      if (!data.ok) { alert(data.error || 'Nem sikerült nyitni.'); return; }
-
-      refreshState();
-    } catch (e) {
-      alert(e.message || 'Hiba nyitás közben.');
-    }
-  }
-
-  async function closeByAsset(assetId, symbol) {
-    try {
-      const aId = Number(assetId);
-      if (!aId || aId <= 0) { alert("Hibás AssetID."); return; }
-
-      let midPrice = Number(prices[symbol] || 0);
-      if (!midPrice || midPrice <= 0) {
-        await fetchPriceForSymbol(symbol);
-        midPrice = Number(prices[symbol] || 0);
+      // positions ára frissüljön
+      for (const p of positions) {
+        const sym = p.Symbol;
+        if (sym) fetchPriceForSymbol(sym, { ingest: false, priceEveryMs: 3000 });
       }
-      if (!midPrice || midPrice <= 0) { alert("Nem sikerült mid árat lekérni záráshoz."); return; }
 
-      const res = await fetch('close_position_by_asset.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assetId: aId, midPrice })
-      });
-
-      const data = await res.json();
-      if (!data.ok) { alert(data.error || 'Nem sikerült zárni.'); return; }
-
-      refreshState();
+      updateUI();
     } catch (e) {
-      alert(e.message || 'Hiba zárás közben.');
+      console.warn("State fetch failed:", e);
     }
   }
-  window.closeByAsset = closeByAsset;
 
-  // ====== EVENTS ======
-  if (searchInput) searchInput.addEventListener("input", () => renderInstruments(searchInput.value));
+  // ====== TRADE (API) ======
+  async function apiOpenPosition({ side, quantity, price }) {
+    const userId = Number(SETTINGS.userId || boot.userId || 0);
+    if (!userId) throw new Error("Hiányzó userId.");
+    if (!selected?.symbol) throw new Error("Nincs kiválasztott instrument!");
 
-  document.querySelectorAll('.tf-row .btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      tf = btn.dataset.tf;
-      setActiveTfButton(tf);
-
-      // TF váltás: reset cache + új full load
-      candleCache = [];
-      earliestTime = null;
-      latestTime = null;
-
-      fetchCandlesFull().then(() => startChartPolling());
+    const { res, json } = await fetchJson(`${API_BASE}/positions/open`, {
+      method: "POST",
+      headers: { "Accept": "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: userId,
+        symbol: selected.symbol,
+        asset_name: selected.name,
+        quantity: Number(quantity),
+        price: Number(price),
+        side: String(side),
+      }),
     });
+
+    if (!res.ok || !json?.ok) throw new Error(json?.error || "Nem sikerült pozíciót nyitni.");
+    return json;
+  }
+
+  async function apiCloseByAsset({ assetId, midPrice }) {
+    const userId = Number(SETTINGS.userId || boot.userId || 0);
+    if (!userId) throw new Error("Hiányzó userId.");
+
+    const { res, json } = await fetchJson(`${API_BASE}/positions/close-by-asset`, {
+      method: "POST",
+      headers: { "Accept": "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: userId,
+        assetId: Number(assetId),
+        midPrice: Number(midPrice),
+      }),
+    });
+
+    if (!res.ok || !json?.ok) throw new Error(json?.error || "Nem sikerült zárni.");
+    return json;
+  }
+
+  buyBtn?.addEventListener("click", async () => {
+    if (tradeBusy) return;
+    tradeBusy = true;
+    setTradeButtonsDisabled(true);
+
+    try {
+      const q = parseInt(qtyInput.value, 10);
+      if (!selected) return alert("Nincs kiválasztott instrument!");
+      if (!Number.isFinite(q) || q <= 0) return alert("Adj meg pozitív mennyiséget!");
+
+      const mid = Number(selected.price || prices[selected.symbol] || 0);
+      const { ask } = getBidAsk(mid);
+      if (!ask || ask <= 0) return alert("Nincs ár adat (ask).");
+
+      await apiOpenPosition({ side: "buy", quantity: q, price: ask });
+      await refreshState();
+    } catch (e) {
+      alert(e?.message || "Hiba vétel közben.");
+    } finally {
+      tradeBusy = false;
+      setTradeButtonsDisabled(false);
+    }
   });
 
-  if (buyBtn) buyBtn.addEventListener('click', () => openPosition('BUY'));
-  if (sellBtn) sellBtn.addEventListener('click', () => openPosition('SELL'));
+  sellBtn?.addEventListener("click", async () => {
+    if (tradeBusy) return;
+    tradeBusy = true;
+    setTradeButtonsDisabled(true);
 
-  // ====== BOOT ======
-  renderInstruments();
-  if (assets.length) selectAsset(assets[0]);
+    try {
+      const q = parseInt(qtyInput.value, 10);
+      if (!selected) return alert("Nincs kiválasztott instrument!");
+      if (!Number.isFinite(q) || q <= 0) return alert("Adj meg pozitív mennyiséget!");
 
-  refreshState();
-  setInterval(refreshState, PRICE_POLL_MS);
+      const mid = Number(selected.price || prices[selected.symbol] || 0);
+      const { bid } = getBidAsk(mid);
+      if (!bid || bid <= 0) return alert("Nincs ár adat (bid).");
+
+      // ✅ SELL = SHORT nyitás (backend engedi)
+      await apiOpenPosition({ side: "sell", quantity: q, price: bid });
+      await refreshState();
+    } catch (e) {
+      alert(e?.message || "Hiba eladás közben.");
+    } finally {
+      tradeBusy = false;
+      setTradeButtonsDisabled(false);
+    }
+  });
+
+  async function closeByAsset(assetId, symbol, btnEl) {
+    const aId = Number(assetId);
+    if (!aId || aId <= 0) return alert("Hibás AssetID.");
+    if (closeBusy.has(aId)) return;
+
+    closeBusy.add(aId);
+    if (btnEl) btnEl.disabled = true;
+
+    try {
+      let mid = Number(prices[symbol] || 0);
+      if (!mid || mid <= 0) {
+        await fetchPriceForSymbol(symbol, { ingest: false, priceEveryMs: 0 });
+        mid = Number(prices[symbol] || 0);
+      }
+      if (!mid || mid <= 0) return alert("Nem sikerült mid árat lekérni záráshoz.");
+
+      await apiCloseByAsset({ assetId: aId, midPrice: mid });
+      await refreshState();
+    } catch (e) {
+      alert(e?.message || "Hiba zárás közben.");
+    } finally {
+      closeBusy.delete(aId);
+      if (btnEl) btnEl.disabled = false;
+    }
+  }
+
+  // ====== ASSET SELECT ======
+  function selectAsset(symbol) {
+    const a = assets.find(x => x.symbol === symbol);
+    if (!a) return;
+
+    selected = a;
+
+    assetTitleEl.textContent = `${a.symbol} — ${a.name}`;
+    assetPriceEl.textContent = (a.price ? a.price.toFixed(2) : "…") + " $";
+    updateSpreadUI();
+
+    // gyors ár + ingest seed (throttle + in-flight véd)
+    fetchPriceForSymbol(a.symbol, { ingest: false, priceEveryMs: 0 });
+    fetchPriceForSymbol(a.symbol, { ingest: true, ingestEveryMs: 0 });
+    setTimeout(() => fetchPriceForSymbol(a.symbol, { ingest: true, ingestEveryMs: 0 }), 800);
+    setTimeout(() => fetchPriceForSymbol(a.symbol, { ingest: true, ingestEveryMs: 0 }), 1600);
+
+    // chart
+    setTimeout(() => chartLoadInitial(true), 900);
+  }
+
+  // ====== SEARCH (debounce + abort) ======
+  let searchTimer = null;
+  let searchAbort = null;
+
+  searchInput?.addEventListener("input", () => {
+    const term = searchInput.value || "";
+    clearTimeout(searchTimer);
+
+    searchTimer = setTimeout(async () => {
+      try {
+        if (searchAbort) searchAbort.abort();
+        searchAbort = new AbortController();
+
+        const list = await apiGetAssets(term, 200, searchAbort.signal);
+        setAssets(list);
+        renderInstruments(term);
+
+        if (selected && !assets.some(x => x.symbol === selected.symbol) && assets.length) {
+          selectAsset(assets[0].symbol);
+        }
+      } catch (e) {
+        if (String(e?.name) === "AbortError") return;
+        console.warn("Asset search failed:", e);
+      }
+    }, 250);
+  });
+
+  // ====== PRICE LOOP: visible only ======
+  function getVisibleSymbolsInSidebar(max = 25) {
+    const els = Array.from(document.querySelectorAll('.price[data-symbol]'));
+    const out = [];
+    for (const el of els) {
+      const sym = el.getAttribute("data-symbol");
+      if (!sym) continue;
+      out.push(sym);
+      if (out.length >= max) break;
+    }
+    return out;
+  }
+
+  function startLoops() {
+    // state
+    refreshState();
+    setInterval(refreshState, STATE_POLL_MS);
+
+    // sidebar visible price
+    setInterval(() => {
+      const visible = getVisibleSymbolsInSidebar(25);
+      for (const sym of visible) {
+        fetchPriceForSymbol(sym, { ingest: false, priceEveryMs: 5000 });
+      }
+      if (selected?.symbol) fetchPriceForSymbol(selected.symbol, { ingest: false, priceEveryMs: 2500 });
+    }, VISIBLE_PRICE_POLL_MS);
+
+    // ingest: selected
+    setInterval(() => {
+      if (selected?.symbol) fetchPriceForSymbol(selected.symbol, { ingest: true, ingestEveryMs: SELECTED_INGEST_MS });
+    }, 2000);
+
+    // ingest: positions
+    setInterval(() => {
+      for (const p of positions || []) {
+        const sym = p.Symbol;
+        if (sym && sym !== selected?.symbol) {
+          fetchPriceForSymbol(sym, { ingest: true, ingestEveryMs: POSITIONS_INGEST_MS });
+        }
+      }
+    }, 3000);
+  }
+
+  // ====== CHART (a te stabil logikáddal) ======
+  let chart = null;
+  let candleSeries = null;
+  let currentTf = "1m";
+
+  let candleMap = new Map();
+  let earliestTime = null;
+  let latestTime = null;
+
+  let isLoadingInitial = false;
+  let isLoadingBackfill = false;
+  let lastBackfillAt = 0;
+
+  let chartPollTimer = null;
+
+  function tfToSeconds(tf) {
+    switch (tf) {
+      case "1m": return 60;
+      case "5m": return 300;
+      case "15m": return 900;
+      case "1h": return 3600;
+      case "1d": return 86400;
+      default: return 60;
+    }
+  }
+
+  function normalizeCandle(raw) {
+    if (!raw) return null;
+    const t = Number(raw.time ?? raw.open_ts ?? raw.ts);
+    const o = Number(raw.open ?? raw.o);
+    const h = Number(raw.high ?? raw.h);
+    const l = Number(raw.low ?? raw.l);
+    const c = Number(raw.close ?? raw.c);
+    if (![t, o, h, l, c].every(Number.isFinite)) return null;
+    return { time: Math.floor(t), open: o, high: h, low: l, close: c };
+  }
+
+  function mergeCandles(list) {
+    for (const x of list) {
+      if (!x || x.time == null) continue;
+      candleMap.set(x.time, x);
+    }
+    const times = Array.from(candleMap.keys()).sort((a, b) => a - b);
+    if (!times.length) { earliestTime = null; latestTime = null; return []; }
+    earliestTime = times[0];
+    latestTime = times[times.length - 1];
+    return times.map(t => candleMap.get(t));
+  }
+
+  async function fetchCandles(symbol, tf, opts = {}) {
+    const limit = opts.limit ?? 500;
+    const params = new URLSearchParams({ symbol, tf, limit: String(limit) });
+    if (opts.from != null) params.set("from", String(opts.from));
+    if (opts.to != null) params.set("to", String(opts.to));
+
+    const res = await fetch(`${API_BASE}/candles?${params.toString()}`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data || data.ok !== true) throw new Error(data?.error || "candle_api_error");
+
+    const arr = Array.isArray(data.candles) ? data.candles : [];
+    const out = [];
+    for (const r of arr) {
+      const c = normalizeCandle(r);
+      if (c) out.push(c);
+    }
+    out.sort((a, b) => a.time - b.time);
+    return out;
+  }
+
+  function initChart() {
+    chart = LightweightCharts.createChart(chartEl, {
+      layout: {
+        background: { type: "solid", color: "transparent" },
+        textColor: getComputedStyle(document.body).getPropertyValue("--text").trim() || "#e6eef8",
+      },
+      rightPriceScale: { borderVisible: false },
+      timeScale: {
+        borderVisible: false,
+        timeVisible: true,
+        secondsVisible: (currentTf === "1m"),
+        rightOffset: 8,
+        barSpacing: 6,
+      },
+      grid: { vertLines: { visible: false }, horzLines: { visible: false } },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+      handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+    });
+
+    candleSeries = chart.addCandlestickSeries({
+      upColor: "#16a34a",
+      downColor: "#ef4444",
+      wickUpColor: "#16a34a",
+      wickDownColor: "#ef4444",
+      borderVisible: false,
+    });
+
+    const ro = new ResizeObserver(() => {
+      try { chart.applyOptions({ width: chartEl.clientWidth, height: chartEl.clientHeight }); } catch {}
+    });
+    ro.observe(chartEl);
+    chart.applyOptions({ width: chartEl.clientWidth, height: chartEl.clientHeight });
+
+    chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
+      if (!range || earliestTime == null) return;
+      maybeBackfill(range);
+    });
+  }
+
+  function resetChartData() {
+    candleMap.clear();
+    earliestTime = null;
+    latestTime = null;
+    candleSeries?.setData([]);
+  }
+
+  async function chartLoadInitial() {
+    if (!selected) return;
+    if (!chart) initChart();
+
+    if (chartPollTimer) { clearInterval(chartPollTimer); chartPollTimer = null; }
+
+    isLoadingInitial = true;
+    resetChartData();
+    setOverlay("Chart betöltés…");
+
+    try {
+      const initialLimit = Number(SETTINGS.chart_limit_initial || 1500);
+      const candles = await fetchCandles(selected.symbol, currentTf, { limit: initialLimit });
+      const merged = mergeCandles(candles);
+      candleSeries.setData(merged);
+
+      if (!merged.length) {
+        setOverlay("Nincs candle adat (DB).");
+      } else {
+        setOverlay("");
+        chart.timeScale().fitContent();
+      }
+
+      startRealtime();
+    } catch (e) {
+      console.warn(e);
+      setOverlay("Chart hiba (Console).");
+    } finally {
+      isLoadingInitial = false;
+    }
+  }
+
+  async function maybeBackfill(range) {
+    if (isLoadingInitial) return;
+
+    const now = Date.now();
+    if (isLoadingBackfill) return;
+    if (now - lastBackfillAt < 650) return;
+
+    const leftVisible = Math.floor(range.from);
+    const threshold = 5 * tfToSeconds(currentTf);
+    if (leftVisible > (earliestTime + threshold)) return;
+
+    isLoadingBackfill = true;
+    lastBackfillAt = now;
+
+    const ts = chart.timeScale();
+    const before = ts.getVisibleRange();
+
+    try {
+      setOverlay("Történet betöltése…");
+
+      const to = earliestTime - tfToSeconds(currentTf);
+      const backfillLimit = Number(SETTINGS.chart_backfill_chunk || 1500);
+      const older = await fetchCandles(selected.symbol, currentTf, { limit: backfillLimit, to });
+
+      if (!older.length) {
+        setOverlay("Nincs több történet.");
+        setTimeout(() => setOverlay(""), 900);
+        return;
+      }
+
+      const merged = mergeCandles(older);
+      candleSeries.setData(merged);
+
+      if (before) ts.setVisibleRange(before);
+      setOverlay("");
+    } catch (e) {
+      console.warn("Backfill error:", e);
+      setOverlay("Backfill hiba.");
+      setTimeout(() => setOverlay(""), 900);
+    } finally {
+      isLoadingBackfill = false;
+    }
+  }
+
+  function startRealtime() {
+    if (chartPollTimer) { clearInterval(chartPollTimer); chartPollTimer = null; }
+
+    chartPollTimer = setInterval(async () => {
+      try {
+        if (!selected || latestTime == null) return;
+
+        const tfSec = tfToSeconds(currentTf);
+        const from = Math.max(0, latestTime - (REALTIME_LIMIT * tfSec));
+
+        const ts = chart.timeScale();
+        const before = ts.getVisibleRange();
+        const follow = (!before || before.to >= (latestTime - 2 * tfSec));
+
+        const recent = await fetchCandles(selected.symbol, currentTf, { limit: REALTIME_LIMIT, from });
+        if (!recent.length) return;
+
+        const merged = mergeCandles(recent);
+        candleSeries.setData(merged);
+
+        if (follow) ts.scrollToRealTime();
+        else if (before) ts.setVisibleRange(before);
+
+        if (chartOverlay && chartOverlay.style.display !== "none") setOverlay("");
+      } catch {
+        // realtime: ne villogtassunk
+      }
+    }, REALTIME_MS);
+  }
+
+  async function onTfSelected(newTf) {
+    currentTf = newTf;
+    setActiveTfButton(currentTf);
+
+    try {
+      await apiUpdateSettings({ user_id: SETTINGS.userId, chart_interval: newTf });
+      SETTINGS.chart_interval = newTf;
+    } catch {}
+
+    if (chart) {
+      try { chart.applyOptions({ timeScale: { secondsVisible: (currentTf === "1m") } }); } catch {}
+    }
+
+    await chartLoadInitial();
+  }
+
+  document.querySelectorAll(".btn[data-tf]").forEach(btn => {
+    btn.addEventListener("click", () => onTfSelected(btn.dataset.tf || "1m"));
+  });
+
+  // ====== BOOT FLOW ======
+  (async () => {
+    await loadSettingsOrFallback();
+
+    currentTf = SETTINGS.chart_interval || "1m";
+    setActiveTfButton(currentTf);
+
+    const cached = readAssetsCache();
+    if (cached && cached.length) {
+      setAssets(cached);
+      renderInstruments(searchInput?.value || "");
+      selected = assets[0] || null;
+      if (selected) selectAsset(selected.symbol);
+    } else {
+      instContainer.innerHTML = `<div class="muted small pad">Assets betöltés…</div>`;
+    }
+
+    try {
+      const list = await apiGetAssets("", 500);
+      writeAssetsCache(list);
+      setAssets(list);
+      renderInstruments(searchInput?.value || "");
+
+      if (!selected && assets.length) selectAsset(assets[0].symbol);
+      if (selected && !assets.some(a => a.symbol === selected.symbol) && assets.length) {
+        selectAsset(assets[0].symbol);
+      }
+    } catch (e) {
+      console.warn("Assets API failed:", e);
+      if (!assets.length) instContainer.innerHTML = `<div class="muted small pad">Assets API hiba.</div>`;
+    }
+
+    updateUI();
+    startLoops();
+
+    if (selected) {
+      await sleep(600);
+      chartLoadInitial();
+    } else {
+      setOverlay("Nincs asset.");
+    }
+  })();
 })();
