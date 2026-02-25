@@ -9,9 +9,10 @@
   const STATE_POLL_MS = 2000;
 
   // ár frissítés: csak látható + selected + positions
-  const VISIBLE_PRICE_POLL_MS = 2500;
-  const SELECTED_INGEST_MS = 5000;
-  const POSITIONS_INGEST_MS = 12000;
+  // FONTOS: Finnhub limit miatt ritkítunk + kevesebb symbolt kérünk egyszerre
+  const VISIBLE_PRICE_POLL_MS = 4000;
+  const SELECTED_INGEST_MS = 8000;
+  const POSITIONS_INGEST_MS = 15000;
 
   // chart
   const REALTIME_MS = 4500;
@@ -58,6 +59,17 @@
   // click védelem
   let tradeBusy = false;
   const closeBusy = new Set();
+
+  // extra védelem: per-symbol action lock (dupla katt + dupla request ellen)
+  const actionLock = new Map(); // symbol -> timestamp(until)
+  function lockSymbol(symbol, ms = 900) {
+    const s = String(symbol || "").toUpperCase();
+    const now = Date.now();
+    const until = actionLock.get(s) || 0;
+    if (until > now) return false;
+    actionLock.set(s, now + ms);
+    return true;
+  }
 
   // settings
   const SETTINGS = {
@@ -114,12 +126,37 @@
   function escapeAttr(s) { return escapeHtml(s); }
 
   function cssEscape(str) {
+    // elég a symbolokra (AAPL, MSFT...), de hagyjuk meg
     return String(str).replaceAll('"', '\\"');
   }
 
   function setTradeButtonsDisabled(disabled) {
     if (buyBtn) buyBtn.disabled = !!disabled;
     if (sellBtn) sellBtn.disabled = !!disabled;
+  }
+
+  // ====== NEW HELPERS: smart close/open ======
+  function getNetQtyAndAssetIdForSymbol(symbol) {
+    const sym = String(symbol || "").toUpperCase();
+    let net = 0;
+    let assetId = null;
+
+    for (const p of (positions || [])) {
+      const ps = String(p.Symbol ?? "").toUpperCase();
+      if (!ps || ps !== sym) continue;
+
+      const q = parseFloat(p.Quantity ?? 0);
+      if (Number.isFinite(q)) net += q;
+
+      const aId = Number(p.AssetID);
+      if (!assetId && Number.isFinite(aId) && aId > 0) assetId = aId;
+    }
+
+    return { netQty: net, assetId };
+  }
+
+  function getSelectedMid() {
+    return Number(selected?.price || prices[selected?.symbol] || 0);
   }
 
   // ====== API: settings ======
@@ -236,10 +273,18 @@
     return { res, json };
   }
 
-  // ====== LEGACY price + ingest (get_price.php) — flood védelem ======
+  // =====================================================================
+  // ====== PRICE + INGEST (Laravel /api/prices) — batch + flood védelem ===
+  // A régi fetchPriceForSymbol API megmarad, csak a hívás get_price.php helyett:
+  //   GET /api/prices?symbols=AAPL,MSFT&ingest=1
+  //
+  // FONTOS: a /api/prices a backendben SYMBOLONKÉNT hív Finnhubot, nem valódi Finnhub batch.
+  // Ezért: kevesebb symbol / ritkább polling, különben 429 és csak 1-2 ár jön meg.
+  // =====================================================================
+
   const _lastPriceAt = {};
   const _lastIngestAt = {};
-  const _inFlight = new Set();
+  const _inFlight = new Set(); // p:SYM / i:SYM
 
   let _priceInFlight = 0;
   const _priceQueue = [];
@@ -256,66 +301,141 @@
     }
   }
 
-  async function fetchPriceForSymbol(symbol, { ingest = false, priceEveryMs = 4000, ingestEveryMs = 5000 } = {}) {
+  const _pending = {
+    p: new Map(), // symbol -> [{resolve,reject}]
+    i: new Map(),
+  };
+  let _flushTimer = null;
+
+  function _queue(map, symbol) {
+    const sym = String(symbol || "").toUpperCase();
+    let arr = map.get(sym);
+    if (!arr) { arr = []; map.set(sym, arr); }
+    return new Promise((resolve, reject) => arr.push({ resolve, reject }));
+  }
+
+  function _scheduleFlush() {
+    if (_flushTimer) return;
+    _flushTimer = setTimeout(_flushNow, 80);
+  }
+
+  async function _fetchPricesBatch(symbols, ingest) {
+    const uniq = Array.from(new Set(symbols.map(s => String(s || "").toUpperCase()).filter(Boolean)));
+    if (!uniq.length) return { data: {}, errors: {} };
+
+    const params = new URLSearchParams();
+    params.set("symbols", uniq.join(","));
+    if (ingest) params.set("ingest", "1");
+
+    // FIX: abszolút útvonal legacy alatt is
+    const url = `/api/prices?${params.toString()}`;
+
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), PRICE_FETCH_TIMEOUT_MS);
+
+    try {
+      const { res, json } = await fetchJson(url, {
+        headers: { "Accept": "application/json" },
+        cache: "no-store",
+        signal: ac.signal,
+      });
+
+      if (!res.ok || !json || json.ok === false) {
+        return { data: {}, errors: { _http: `HTTP ${res.status}` } };
+      }
+
+      const errs = (json.errors && typeof json.errors === "object") ? json.errors : {};
+      return { data: json.data || {}, errors: errs };
+    } catch (e) {
+      return { data: {}, errors: { _net: e?.message || "network_error" } };
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  function _applyPrice(symbol, mid) {
+    const sym = String(symbol || "").toUpperCase();
+    const v = Number.parseFloat(mid);
+    if (!Number.isFinite(v)) return;
+
+    prices[sym] = v;
+
+    const a = assets.find(x => x.symbol === sym);
+    if (a) a.price = v;
+
+    document.querySelectorAll(`.price[data-symbol="${cssEscape(sym)}"]`).forEach(el => {
+      el.textContent = v.toFixed(2) + " $";
+    });
+
+    if (selected && selected.symbol === sym) {
+      selected.price = v;
+      assetPriceEl.textContent = v.toFixed(2) + " $";
+      updateSpreadUI();
+    }
+  }
+
+  async function _flushMap(map, ingest) {
+    const symbols = Array.from(map.keys());
+    if (!symbols.length) return;
+
+    // chunk limit: 10 (Finnhub limit miatt!)
+    const chunk = symbols.slice(0, 10);
+
+    await withPriceSlot(async () => {
+      const { data, errors } = await _fetchPricesBatch(chunk, ingest);
+
+      for (const sym of chunk) {
+        const payload = data[sym];
+        if (payload && payload.price != null) {
+          _applyPrice(sym, payload.price);
+        }
+      }
+
+      for (const sym of chunk) {
+        const waiters = map.get(sym) || [];
+        map.delete(sym);
+
+        _inFlight.delete((ingest ? "i:" : "p:") + sym);
+
+        if (errors && errors[sym]) {
+          waiters.forEach(w => w.reject(new Error(errors[sym])));
+        } else {
+          waiters.forEach(w => w.resolve(true));
+        }
+      }
+    });
+  }
+
+  async function _flushNow() {
+    _flushTimer = null;
+
+    await _flushMap(_pending.i, true);
+    await _flushMap(_pending.p, false);
+
+    if (_pending.i.size || _pending.p.size) _scheduleFlush();
+  }
+
+  async function fetchPriceForSymbol(symbol, { ingest = false, priceEveryMs = 10000, ingestEveryMs = 12000 } = {}) {
+    const sym = String(symbol || "").toUpperCase();
+    if (!sym) return;
+
     const now = Date.now();
 
-    if (!symbol) return;
-
     if (!ingest) {
-      if (_lastPriceAt[symbol] && (now - _lastPriceAt[symbol] < priceEveryMs)) return;
-      _lastPriceAt[symbol] = now;
+      if (_lastPriceAt[sym] && (now - _lastPriceAt[sym] < priceEveryMs)) return;
+      _lastPriceAt[sym] = now;
     } else {
-      if (_lastIngestAt[symbol] && (now - _lastIngestAt[symbol] < ingestEveryMs)) return;
-      _lastIngestAt[symbol] = now;
+      if (_lastIngestAt[sym] && (now - _lastIngestAt[sym] < ingestEveryMs)) return;
+      _lastIngestAt[sym] = now;
     }
 
-    const key = (ingest ? "i:" : "p:") + symbol;
+    const key = (ingest ? "i:" : "p:") + sym;
     if (_inFlight.has(key)) return;
     _inFlight.add(key);
 
-    const ingestParam = ingest ? "&ingest=1" : "";
-    const url = `./get_price.php?symbol=${encodeURIComponent(symbol)}${ingestParam}`;
-
-    try {
-      await withPriceSlot(async () => {
-        const ac = new AbortController();
-        const t = setTimeout(() => ac.abort(), PRICE_FETCH_TIMEOUT_MS);
-
-        try {
-          const { res, json } = await fetchJson(url, { cache: "no-store", signal: ac.signal });
-          clearTimeout(t);
-
-          if (!res.ok) return;
-          if (!json || json.ok === false || json.error) return;
-          if (json.price === undefined || json.price === null) return;
-
-          const mid = Number.parseFloat(json.price);
-          if (!Number.isFinite(mid)) return;
-
-          prices[symbol] = mid;
-
-          // assets tömb frissítése
-          const a = assets.find(x => x.symbol === symbol);
-          if (a) a.price = mid;
-
-          // sidebar price update
-          document.querySelectorAll(`.price[data-symbol="${cssEscape(symbol)}"]`).forEach(el => {
-            el.textContent = mid.toFixed(2) + " $";
-          });
-
-          // header update
-          if (selected && selected.symbol === symbol) {
-            selected.price = mid;
-            assetPriceEl.textContent = mid.toFixed(2) + " $";
-            updateSpreadUI();
-          }
-        } catch {
-          clearTimeout(t);
-        }
-      });
-    } finally {
-      _inFlight.delete(key);
-    }
+    const p = ingest ? _queue(_pending.i, sym) : _queue(_pending.p, sym);
+    _scheduleFlush();
+    return p;
   }
 
   // ====== STATE (positions / balance) ======
@@ -383,10 +503,9 @@
       balance = parseFloat(json.balance ?? balance);
       positions = json.positions || [];
 
-      // positions ára frissüljön
       for (const p of positions) {
         const sym = p.Symbol;
-        if (sym) fetchPriceForSymbol(sym, { ingest: false, priceEveryMs: 3000 });
+        if (sym) fetchPriceForSymbol(sym, { ingest: false, priceEveryMs: 10000 });
       }
 
       updateUI();
@@ -436,17 +555,36 @@
     return json;
   }
 
+  // ====== BUY/SELL buttons (SMART + LOCK) ======
   buyBtn?.addEventListener("click", async () => {
     if (tradeBusy) return;
     tradeBusy = true;
     setTradeButtonsDisabled(true);
 
     try {
+      if (!lockSymbol(selected?.symbol, 900)) return;
+
       const q = parseInt(qtyInput.value, 10);
       if (!selected) return alert("Nincs kiválasztott instrument!");
       if (!Number.isFinite(q) || q <= 0) return alert("Adj meg pozitív mennyiséget!");
 
-      const mid = Number(selected.price || prices[selected.symbol] || 0);
+      const { netQty, assetId } = getNetQtyAndAssetIdForSymbol(selected.symbol);
+
+      if (netQty < 0) {
+        let mid = getSelectedMid();
+        if (!mid || mid <= 0) {
+          await fetchPriceForSymbol(selected.symbol, { ingest: false, priceEveryMs: 0 });
+          mid = getSelectedMid();
+        }
+        if (!mid || mid <= 0) return alert("Nincs ár adat (mid) záráshoz.");
+        if (!assetId) return alert("Nem találom az AssetID-t a nyitott pozícióból (state).");
+
+        await apiCloseByAsset({ assetId: assetId, midPrice: mid });
+        await refreshState();
+        return;
+      }
+
+      const mid = getSelectedMid();
       const { ask } = getBidAsk(mid);
       if (!ask || ask <= 0) return alert("Nincs ár adat (ask).");
 
@@ -466,15 +604,32 @@
     setTradeButtonsDisabled(true);
 
     try {
+      if (!lockSymbol(selected?.symbol, 900)) return;
+
       const q = parseInt(qtyInput.value, 10);
       if (!selected) return alert("Nincs kiválasztott instrument!");
       if (!Number.isFinite(q) || q <= 0) return alert("Adj meg pozitív mennyiséget!");
 
-      const mid = Number(selected.price || prices[selected.symbol] || 0);
+      const { netQty, assetId } = getNetQtyAndAssetIdForSymbol(selected.symbol);
+
+      if (netQty > 0) {
+        let mid = getSelectedMid();
+        if (!mid || mid <= 0) {
+          await fetchPriceForSymbol(selected.symbol, { ingest: false, priceEveryMs: 0 });
+          mid = getSelectedMid();
+        }
+        if (!mid || mid <= 0) return alert("Nincs ár adat (mid) záráshoz.");
+        if (!assetId) return alert("Nem találom az AssetID-t a nyitott pozícióból (state).");
+
+        await apiCloseByAsset({ assetId: assetId, midPrice: mid });
+        await refreshState();
+        return;
+      }
+
+      const mid = getSelectedMid();
       const { bid } = getBidAsk(mid);
       if (!bid || bid <= 0) return alert("Nincs ár adat (bid).");
 
-      // ✅ SELL = SHORT nyitás (backend engedi)
       await apiOpenPosition({ side: "sell", quantity: q, price: bid });
       await refreshState();
     } catch (e) {
@@ -489,6 +644,9 @@
     const aId = Number(assetId);
     if (!aId || aId <= 0) return alert("Hibás AssetID.");
     if (closeBusy.has(aId)) return;
+
+    // lock ugyanarra a symbolra is (dupla katt ellen)
+    if (!lockSymbol(symbol, 900)) return;
 
     closeBusy.add(aId);
     if (btnEl) btnEl.disabled = true;
@@ -522,13 +680,14 @@
     assetPriceEl.textContent = (a.price ? a.price.toFixed(2) : "…") + " $";
     updateSpreadUI();
 
-    // gyors ár + ingest seed (throttle + in-flight véd)
+    // ár azonnal
     fetchPriceForSymbol(a.symbol, { ingest: false, priceEveryMs: 0 });
-    fetchPriceForSymbol(a.symbol, { ingest: true, ingestEveryMs: 0 });
-    setTimeout(() => fetchPriceForSymbol(a.symbol, { ingest: true, ingestEveryMs: 0 }), 800);
-    setTimeout(() => fetchPriceForSymbol(a.symbol, { ingest: true, ingestEveryMs: 0 }), 1600);
 
-    // chart
+    // ingest: ne spam-eljük (Finnhub limit)
+    fetchPriceForSymbol(a.symbol, { ingest: true, ingestEveryMs: 0 });
+    setTimeout(() => fetchPriceForSymbol(a.symbol, { ingest: true, ingestEveryMs: 8000 }), 800);
+    setTimeout(() => fetchPriceForSymbol(a.symbol, { ingest: true, ingestEveryMs: 8000 }), 1600);
+
     setTimeout(() => chartLoadInitial(true), 900);
   }
 
@@ -560,7 +719,7 @@
   });
 
   // ====== PRICE LOOP: visible only ======
-  function getVisibleSymbolsInSidebar(max = 25) {
+  function getVisibleSymbolsInSidebar(max = 8) {
     const els = Array.from(document.querySelectorAll('.price[data-symbol]'));
     const out = [];
     for (const el of els) {
@@ -573,25 +732,21 @@
   }
 
   function startLoops() {
-    // state
     refreshState();
     setInterval(refreshState, STATE_POLL_MS);
 
-    // sidebar visible price
     setInterval(() => {
-      const visible = getVisibleSymbolsInSidebar(25);
+      const visible = getVisibleSymbolsInSidebar(8);
       for (const sym of visible) {
-        fetchPriceForSymbol(sym, { ingest: false, priceEveryMs: 5000 });
+        fetchPriceForSymbol(sym, { ingest: false, priceEveryMs: 12000 });
       }
-      if (selected?.symbol) fetchPriceForSymbol(selected.symbol, { ingest: false, priceEveryMs: 2500 });
+      if (selected?.symbol) fetchPriceForSymbol(selected.symbol, { ingest: false, priceEveryMs: 6000 });
     }, VISIBLE_PRICE_POLL_MS);
 
-    // ingest: selected
     setInterval(() => {
       if (selected?.symbol) fetchPriceForSymbol(selected.symbol, { ingest: true, ingestEveryMs: SELECTED_INGEST_MS });
-    }, 2000);
+    }, 2500);
 
-    // ingest: positions
     setInterval(() => {
       for (const p of positions || []) {
         const sym = p.Symbol;
@@ -599,7 +754,7 @@
           fetchPriceForSymbol(sym, { ingest: true, ingestEveryMs: POSITIONS_INGEST_MS });
         }
       }
-    }, 3000);
+    }, 4000);
   }
 
   // ====== CHART (a te stabil logikáddal) ======

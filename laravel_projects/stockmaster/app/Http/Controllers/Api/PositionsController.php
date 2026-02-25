@@ -20,7 +20,7 @@ class PositionsController extends Controller
      * JSON: { user_id, symbol, asset_name, quantity, price, side: buy|sell }
      *
      * BUY  -> long
-     * SELL -> SHORT (engedélyezett, nem kell holding)
+     * SELL -> SHORT
      */
     public function open(Request $request)
     {
@@ -75,17 +75,19 @@ class PositionsController extends Controller
                 $tradeValue = $qty * $price;
 
                 if ($side === 'buy') {
+                    // LONG: cash-szerű modell (kifizetés)
                     if ($tradeValue > $balance) {
                         throw new \RuntimeException('Nincs elegendő egyenleg.');
                     }
                     $newBalance = $balance - $tradeValue;
                 } else {
-                    // ✅ SHORT engedélyezve
+                    // ✅ SHORT: DEMO equity modell
+                    // Short nyitáskor NE adjuk hozzá a proceeds-et a DemoBalance-hez.
                     $required = $tradeValue * self::SHORT_MARGIN_RATE;
                     if ($required > 0 && $balance < $required) {
                         throw new \RuntimeException('Nincs elég fedezet a shorthoz.');
                     }
-                    $newBalance = $balance + $tradeValue;
+                    $newBalance = $balance;
                 }
 
                 DB::table('positions')->insert([
@@ -194,13 +196,18 @@ class PositionsController extends Controller
                     if ($pt === 'buy') {
                         $closePrice = $bid;
                         $pnl = ($closePrice - $en) * $q;
-                        // buy zárás: pénz bejön
+
+                        // LONG zárás: cash visszajön (záráskori ár * qty)
                         $cashDelta = $closePrice * $q;
+
                     } elseif ($pt === 'sell') {
                         $closePrice = $ask;
                         $pnl = ($en - $closePrice) * $q;
-                        // short zárás: pénz kimegy (visszavásárlás)
-                        $cashDelta = -($closePrice * $q);
+
+                        // ✅ SHORT zárás DEMO equity modell:
+                        // csak a PnL-t könyveljük, mert nyitáskor nem adtunk hozzá proceeds-et.
+                        $cashDelta = $pnl;
+
                     } else {
                         continue;
                     }

@@ -9,168 +9,69 @@ if (!isLoggedIn()) {
     legacy_json(['ok' => false, 'error' => 'Nincs bejelentkezve.'], 401);
 }
 
-$conn   = legacy_db();
 $userId = currentUserId();
-
 session_write_close();
+
+function baseUrl(): string {
+    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    $host = $_SERVER['HTTP_HOST'] ?? '127.0.0.1:8000';
+    return $scheme . '://' . $host;
+}
 
 $raw = file_get_contents('php://input');
 $payload = json_decode($raw ?: '{}', true);
-if (!is_array($payload)) {
-    $payload = [];
-}
+if (!is_array($payload)) $payload = [];
 
-// ---- Base settings ----
-$autoLogin           = (int)($payload['AutoLogin'] ?? 0);
-$receiveNotifications = (int)($payload['ReceiveNotifications'] ?? 1);
+$autoLogin = !empty($payload['AutoLogin']) ? 1 : 0;
+$receiveNotifications = !empty($payload['ReceiveNotifications']) ? 1 : 0;
 
-// Frontend név keveredés miatt: PreferredChartTheme vagy ChartTheme
-$chartTheme    = (string)($payload['PreferredChartTheme'] ?? $payload['ChartTheme'] ?? 'dark');
-$chartInterval = (string)($payload['PreferredChartInterval'] ?? '1m');
+$chartTheme = strtolower(trim((string)($payload['PreferredChartTheme'] ?? 'dark')));
+if (!in_array($chartTheme, ['dark','light'], true)) $chartTheme = 'dark';
 
-// ---- Limits (new fields) ----
-$newsLimit               = (int)($payload['NewsLimit'] ?? 8);
-$newsPerSymbolLimit      = (int)($payload['NewsPerSymbolLimit'] ?? 3);
+$chartInterval = trim((string)($payload['PreferredChartInterval'] ?? '1m'));
+if ($chartInterval === '') $chartInterval = '1m';
+
+$newsLimit = (int)($payload['NewsLimit'] ?? 8);
+$newsPerSymbolLimit = (int)($payload['NewsPerSymbolLimit'] ?? 3);
 $newsPortfolioTotalLimit = (int)($payload['NewsPortfolioTotalLimit'] ?? 20);
-$calendarLimit           = (int)($payload['CalendarLimit'] ?? 8);
+$calendarLimit = (int)($payload['CalendarLimit'] ?? 8);
 
-// ---- Clamp ----
-$autoLogin = $autoLogin ? 1 : 0;
-$receiveNotifications = $receiveNotifications ? 1 : 0;
+$newsLimit = max(3, min(30, $newsLimit));
+$newsPerSymbolLimit = max(1, min(10, $newsPerSymbolLimit));
+$newsPortfolioTotalLimit = max(5, min(60, $newsPortfolioTotalLimit));
+$calendarLimit = max(3, min(60, $calendarLimit));
 
-$chartTheme = strtolower(trim($chartTheme));
-if (!in_array($chartTheme, ['dark', 'light'], true)) {
-    $chartTheme = 'dark';
+$apiUrl = baseUrl() . "/api/settings";
+
+$body = json_encode([
+    'user_id' => (int)$userId,
+    'chart_interval' => $chartInterval,
+    'chart_theme' => $chartTheme,
+    'news_limit' => $newsLimit,
+    'news_per_symbol_limit' => $newsPerSymbolLimit,
+    'news_portfolio_total_limit' => $newsPortfolioTotalLimit,
+    'calendar_limit' => $calendarLimit,
+    'auto_login' => $autoLogin,
+    'receive_notifications' => $receiveNotifications,
+]);
+
+$ctx = stream_context_create([
+    'http' => [
+        'method' => 'POST',
+        'header' => "Content-Type: application/json\r\nAccept: application/json\r\n",
+        'content' => $body,
+        'timeout' => 3,
+    ],
+]);
+
+$json = @file_get_contents($apiUrl, false, $ctx);
+if (!$json) {
+    legacy_json(['ok' => false, 'error' => 'API hívás sikertelen (/api/settings).'], 500);
 }
 
-$chartInterval = trim($chartInterval);
-if ($chartInterval === '') {
-    $chartInterval = '1m';
+$data = json_decode($json, true);
+if (!is_array($data) || empty($data['ok'])) {
+    legacy_json(['ok' => false, 'error' => $data['error'] ?? 'API mentés hiba.'], 500);
 }
 
-if ($newsLimit < 3) $newsLimit = 3;
-if ($newsLimit > 30) $newsLimit = 30;
-
-if ($newsPerSymbolLimit < 1) $newsPerSymbolLimit = 1;
-if ($newsPerSymbolLimit > 10) $newsPerSymbolLimit = 10;
-
-if ($newsPortfolioTotalLimit < 5) $newsPortfolioTotalLimit = 5;
-if ($newsPortfolioTotalLimit > 60) $newsPortfolioTotalLimit = 60;
-
-if ($calendarLimit < 3) $calendarLimit = 3;
-if ($calendarLimit > 60) $calendarLimit = 60;
-
-$chk = $conn->prepare('SELECT 1 FROM usersettings WHERE UserID = ? LIMIT 1');
-if (!$chk) {
-    legacy_json(['ok' => false, 'error' => 'DB prepare hiba (exists).'], 500);
-}
-$chk->bind_param('i', $userId);
-if (!$chk->execute()) {
-    $chk->close();
-    legacy_json(['ok' => false, 'error' => 'DB execute hiba (exists).'], 500);
-}
-$chk->store_result();
-$exists = ($chk->num_rows > 0);
-$chk->close();
-
-$warning = null;
-
-if ($exists) {
-    // UPDATE (extended)
-    $stmt = @$conn->prepare("
-        UPDATE usersettings
-        SET AutoLogin = ?,
-            ReceiveNotifications = ?,
-            PreferredChartTheme = ?,
-            PreferredChartInterval = ?,
-            NewsLimit = ?,
-            NewsPerSymbolLimit = ?,
-            NewsPortfolioTotalLimit = ?,
-            CalendarLimit = ?
-        WHERE UserID = ?
-    ");
-
-    if ($stmt) {
-        $stmt->bind_param(
-            'iissiiiii',
-            $autoLogin,
-            $receiveNotifications,
-            $chartTheme,
-            $chartInterval,
-            $newsLimit,
-            $newsPerSymbolLimit,
-            $newsPortfolioTotalLimit,
-            $calendarLimit,
-            $userId
-        );
-
-        $ok = $stmt->execute();
-        $stmt->close();
-
-        legacy_json(['ok' => (bool)$ok]);
-    }
-
-    // UPDATE fallback (legacy fields only)
-    $stmt2 = $conn->prepare("
-        UPDATE usersettings
-        SET AutoLogin = ?,
-            ReceiveNotifications = ?,
-            PreferredChartTheme = ?,
-            PreferredChartInterval = ?
-        WHERE UserID = ?
-    ");
-    if (!$stmt2) {
-        legacy_json(['ok' => false, 'error' => 'DB prepare hiba (fallback update).'], 500);
-    }
-
-    $stmt2->bind_param('iissi', $autoLogin, $receiveNotifications, $chartTheme, $chartInterval, $userId);
-    $ok2 = $stmt2->execute();
-    $stmt2->close();
-
-    $warning = 'A limit mezők nem mentődtek (hiányoznak az oszlopok). Futtasd le az ALTER TABLE SQL-t.';
-    legacy_json(['ok' => (bool)$ok2, 'warning' => $warning]);
-}
-
-// INSERT (extended)
-$stmt = @$conn->prepare("
-    INSERT INTO usersettings
-        (UserID, AutoLogin, ReceiveNotifications, PreferredChartTheme, PreferredChartInterval,
-         NewsLimit, NewsPerSymbolLimit, NewsPortfolioTotalLimit, CalendarLimit)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-");
-
-if ($stmt) {
-    $stmt->bind_param(
-        'iiissiiii',
-        $userId,
-        $autoLogin,
-        $receiveNotifications,
-        $chartTheme,
-        $chartInterval,
-        $newsLimit,
-        $newsPerSymbolLimit,
-        $newsPortfolioTotalLimit,
-        $calendarLimit
-    );
-
-    $ok = $stmt->execute();
-    $stmt->close();
-
-    legacy_json(['ok' => (bool)$ok]);
-}
-
-$stmt2 = $conn->prepare("
-    INSERT INTO usersettings
-        (UserID, AutoLogin, ReceiveNotifications, PreferredChartTheme, PreferredChartInterval)
-    VALUES (?, ?, ?, ?, ?)
-");
-if (!$stmt2) {
-    legacy_json(['ok' => false, 'error' => 'DB prepare hiba (fallback insert).'], 500);
-}
-
-$stmt2->bind_param('iiiss', $userId, $autoLogin, $receiveNotifications, $chartTheme, $chartInterval);
-$ok2 = $stmt2->execute();
-$stmt2->close();
-
-$warning = 'A limit mezők nem mentődtek (hiányoznak az oszlopok). Futtasd le az ALTER TABLE SQL-t.';
-legacy_json(['ok' => (bool)$ok2, 'warning' => $warning]);
+legacy_json(['ok' => true]);

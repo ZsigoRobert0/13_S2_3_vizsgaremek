@@ -6,98 +6,77 @@ require_once __DIR__ . '/user_service.php';
 
 requireLogin();
 
-$conn   = legacy_db();
 $userId = currentUserId();
-$user   = getUser($userId);
+if ($userId <= 0) legacy_redirect('login.php');
 
-if ($userId <= 0) {
-    legacy_redirect('login.php');
+function baseUrl(): string {
+    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    $host = $_SERVER['HTTP_HOST'] ?? '127.0.0.1:8000';
+    return $scheme . '://' . $host;
 }
 
-// --- usersettings defaultok ---
+function apiGetJson(string $url): ?array {
+    $ctx = stream_context_create([
+        'http' => [
+            'method' => 'GET',
+            'header' => "Accept: application/json\r\n",
+            'timeout' => 3,
+        ],
+    ]);
+    $json = @file_get_contents($url, false, $ctx);
+    if (!$json) return null;
+    $data = json_decode($json, true);
+    return is_array($data) ? $data : null;
+}
+
+// Defaults (legacy kulcsok, hogy a meglévő UI/JS stabil legyen)
 $settings = [
   'AutoLogin' => 0,
   'ReceiveNotifications' => 1,
   'PreferredChartTheme' => 'dark',
   'PreferredChartInterval' => '1m',
-
-  // ÚJ: limitek (default)
-  'NewsLimit' => 8,                 // general mód max
-  'NewsPerSymbolLimit' => 3,         // portfolio módban ticker-enként
-  'NewsPortfolioTotalLimit' => 20,   // portfolio módban összesen
-  'CalendarLimit' => 8,              // naptár max
+  'NewsLimit' => 8,
+  'NewsPerSymbolLimit' => 3,
+  'NewsPortfolioTotalLimit' => 20,
+  'CalendarLimit' => 8,
 ];
 
-$stmt = @$conn->prepare("
-    SELECT
-      AutoLogin, ReceiveNotifications, PreferredChartTheme, PreferredChartInterval,
-      NewsLimit, NewsPerSymbolLimit, NewsPortfolioTotalLimit, CalendarLimit
-    FROM usersettings
-    WHERE UserID = ?
-    LIMIT 1
-");
+// Laravel API settings betöltés
+$apiBase = baseUrl();
+$apiSettings = apiGetJson($apiBase . "/api/settings?user_id=" . intval($userId));
 
-if ($stmt) {
-    $stmt->bind_param('i', $userId);
-    $stmt->execute();
-    $res = $stmt->get_result();
-    if ($row = $res->fetch_assoc()) {
-        $settings['AutoLogin'] = (int)($row['AutoLogin'] ?? 0);
-        $settings['ReceiveNotifications'] = (int)($row['ReceiveNotifications'] ?? 1);
-        $settings['PreferredChartTheme'] = (string)($row['PreferredChartTheme'] ?? 'dark');
-        $settings['PreferredChartInterval'] = (string)($row['PreferredChartInterval'] ?? '1m');
+if ($apiSettings && !empty($apiSettings['ok']) && is_array($apiSettings['data'] ?? null)) {
+    $s = $apiSettings['data'];
+    $settings['AutoLogin'] = (int)($s['auto_login'] ?? $settings['AutoLogin']);
+    $settings['ReceiveNotifications'] = (int)($s['receive_notifications'] ?? $settings['ReceiveNotifications']);
+    $settings['PreferredChartTheme'] = (string)($s['chart_theme'] ?? $settings['PreferredChartTheme']);
+    $settings['PreferredChartInterval'] = (string)($s['chart_interval'] ?? $settings['PreferredChartInterval']);
 
-        $settings['NewsLimit'] = (int)($row['NewsLimit'] ?? $settings['NewsLimit']);
-        $settings['NewsPerSymbolLimit'] = (int)($row['NewsPerSymbolLimit'] ?? $settings['NewsPerSymbolLimit']);
-        $settings['NewsPortfolioTotalLimit'] = (int)($row['NewsPortfolioTotalLimit'] ?? $settings['NewsPortfolioTotalLimit']);
-        $settings['CalendarLimit'] = (int)($row['CalendarLimit'] ?? $settings['CalendarLimit']);
-    }
-    $stmt->close();
-} else {
-    // fallback (régi oszlopok)
-    $stmt2 = $conn->prepare("
-        SELECT AutoLogin, ReceiveNotifications, PreferredChartTheme, PreferredChartInterval
-        FROM usersettings
-        WHERE UserID = ?
-        LIMIT 1
-    ");
-    $stmt2->bind_param('i', $userId);
-    $stmt2->execute();
-    $res2 = $stmt2->get_result();
-    if ($row = $res2->fetch_assoc()) {
-        $settings['AutoLogin'] = (int)($row['AutoLogin'] ?? 0);
-        $settings['ReceiveNotifications'] = (int)($row['ReceiveNotifications'] ?? 1);
-        $settings['PreferredChartTheme'] = (string)($row['PreferredChartTheme'] ?? 'dark');
-        $settings['PreferredChartInterval'] = (string)($row['PreferredChartInterval'] ?? '1m');
-    }
-    $stmt2->close();
+    $settings['NewsLimit'] = (int)($s['news_limit'] ?? $settings['NewsLimit']);
+    $settings['NewsPerSymbolLimit'] = (int)($s['news_per_symbol_limit'] ?? $settings['NewsPerSymbolLimit']);
+    $settings['NewsPortfolioTotalLimit'] = (int)($s['news_portfolio_total_limit'] ?? $settings['NewsPortfolioTotalLimit']);
+    $settings['CalendarLimit'] = (int)($s['calendar_limit'] ?? $settings['CalendarLimit']);
 }
 
-// clamp (biztonság)
+// clamp
 $settings['NewsLimit'] = max(3, min(30, (int)$settings['NewsLimit']));
 $settings['NewsPerSymbolLimit'] = max(1, min(10, (int)$settings['NewsPerSymbolLimit']));
 $settings['NewsPortfolioTotalLimit'] = max(5, min(60, (int)$settings['NewsPortfolioTotalLimit']));
 $settings['CalendarLimit'] = max(3, min(60, (int)$settings['CalendarLimit']));
 
-// --- portfólió tickerek (nyitott pozik) a hírek szűréshez ---
+// Portfolio tickerek (Laravel /api/state)
 $tickers = [];
-$q = $conn->prepare("
-  SELECT DISTINCT a.Symbol
-  FROM positions p
-  JOIN assets a ON a.ID = p.AssetID
-  WHERE p.UserID = ? AND p.IsOpen = 1
-  ORDER BY a.Symbol
-  LIMIT 30
-");
-$q->bind_param('i', $userId);
-$q->execute();
-$r = $q->get_result();
-while ($rr = $r->fetch_assoc()) {
-    $tickers[] = (string)$rr['Symbol'];
+$apiState = apiGetJson($apiBase . "/api/state?user_id=" . intval($userId));
+if ($apiState && !empty($apiState['ok'])) {
+    $pos = $apiState['positions'] ?? ($apiState['data']['positions'] ?? null);
+    if (is_array($pos)) {
+        foreach ($pos as $p) {
+            $sym = strtoupper((string)($p['Symbol'] ?? $p['symbol'] ?? ''));
+            if ($sym !== '') $tickers[$sym] = true;
+        }
+    }
 }
-$q->close();
-
-$tickerStr = implode(', ', $tickers);
+$tickerStr = implode(', ', array_keys($tickers));
 ?>
 <!DOCTYPE html>
 <html lang="hu">
@@ -105,6 +84,8 @@ $tickerStr = implode(', ', $tickers);
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>StockMaster — Beállítások</title>
+
+<link rel="stylesheet" href="app.css?v=1">
 
 <style>
 :root{
@@ -163,10 +144,7 @@ html,body{
   border-radius:16px;
   padding:14px;
   box-shadow:0 6px 18px rgba(2,6,23,0.55);
-
-  /* Fix magasság: ne tolja le a Mentést */
   height: 520px;
-
   display:flex;
   flex-direction:column;
 }
@@ -211,7 +189,6 @@ html,body{
   font-weight:900;
   font-size:12px;
 }
-
 .limitBox{
   display:flex;
   align-items:center;
@@ -222,8 +199,6 @@ html,body{
   font-weight:900;
   font-size:12px;
 }
-
-/* --- Dark select fix + nyíl --- */
 .limitWrap{
   position: relative;
   display:inline-flex;
@@ -238,31 +213,21 @@ html,body{
   font-size:12px;
   font-weight:900;
 }
-
 .limitSelect{
   -webkit-appearance:none;
   -moz-appearance:none;
   appearance:none;
-
   background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(0,0,0,0.08));
   border: 1px solid var(--line);
   color: var(--text);
-
   padding:8px 34px 8px 12px;
   border-radius:12px;
   font-weight:900;
   font-size:12px;
   line-height:1;
-
   box-shadow: 0 8px 18px rgba(2,6,23,0.35);
   cursor:pointer;
   backdrop-filter: blur(6px);
-}
-.limitSelect:hover{ border-color: rgba(255,255,255,0.14); }
-.limitSelect:focus{
-  outline:none;
-  border-color: rgba(255,255,255,0.22);
-  box-shadow: 0 0 0 3px rgba(255,255,255,0.06), 0 10px 24px rgba(2,6,23,0.45);
 }
 .limitSelect option{ background:#0b1220; color:#e6eef8; }
 
@@ -271,19 +236,14 @@ html,body{
   overflow:auto;
   padding-right:6px;
 }
-.list::-webkit-scrollbar{ width:6px; }
-.list::-webkit-scrollbar-thumb{ background:rgba(148,163,184,0.5); border-radius:999px; }
-.list::-webkit-scrollbar-thumb:hover{ background:rgba(148,163,184,0.9); }
-.list::-webkit-scrollbar-track{ background:transparent; }
-
-.newsItem{
+.newsItem,.eventCard{
   border:1px solid var(--line);
   background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.03));
   border-radius:14px;
   padding:12px;
   margin-bottom:10px;
 }
-.newsTitle{ font-weight:900; font-size:13px; line-height:1.25; margin:0 0 8px; }
+.newsTitle,.eventTitle{ font-weight:900; font-size:13px; line-height:1.25; margin:0 0 8px; }
 .newsRow{
   display:flex;
   gap:10px;
@@ -299,21 +259,7 @@ html,body{
   text-decoration:none;
   border-bottom:1px dashed rgba(255,255,255,0.25);
 }
-.newsDesc{
-  color:rgba(230,238,248,0.85);
-  font-size:12px;
-  line-height:1.45;
-  margin:0;
-}
-
-.eventCard{
-  border:1px solid var(--line);
-  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.03));
-  border-radius:14px;
-  padding:12px;
-  margin-bottom:10px;
-}
-.eventTitle{ font-weight:900; font-size:13px; margin:0 0 8px; }
+.newsDesc{ color:rgba(230,238,248,0.85); font-size:12px; line-height:1.45; margin:0; }
 .eventMeta{ display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
 .pill{
   display:inline-flex;
@@ -347,7 +293,6 @@ html,body{
   font-weight:900;
 }
 .toast{ margin-left:10px; color:var(--muted); font-size:12px; }
-
 .err{ color:#ffb4b4; font-weight:900; }
 .ok{ color:#b7ffcf; font-weight:900; }
 
@@ -360,11 +305,10 @@ html,body{
 
 <body>
 <div class="wrap">
-
   <div class="topbar">
     <div>
       <h1 class="h1">Beállítások</h1>
-      <div class="sub"><strong></strong></div>
+      <div class="sub">Piaci hírek és Piaci naptár (Laravel API)</div>
     </div>
     <a class="back" href="index.php">← Vissza a főoldalra</a>
   </div>
@@ -374,7 +318,6 @@ html,body{
 
   <div class="grid2">
 
-    <!-- ✅ CALENDAR (bal) -->
     <div class="card">
       <div class="cardHead">
         <div>
@@ -388,11 +331,11 @@ html,body{
             <div class="limitWrap">
               <select class="limitSelect" id="calLimit">
                 <?php
-                  $opts = [6,8,10,15,20,30,60];
-                  foreach ($opts as $v) {
-                    $sel = ((int)$settings['CalendarLimit'] === $v) ? 'selected' : '';
-                    echo "<option value=\"{$v}\" {$sel}>{$v}</option>";
-                  }
+                $opts = [6,8,10,15,20,30,60];
+                foreach ($opts as $v) {
+                  $sel = ((int)$settings['CalendarLimit'] === $v) ? 'selected' : '';
+                  echo "<option value=\"{$v}\" {$sel}>{$v}</option>";
+                }
                 ?>
               </select>
             </div>
@@ -406,7 +349,6 @@ html,body{
       </div>
     </div>
 
-    <!-- NEWS (jobb) -->
     <div class="card">
       <div class="cardHead">
         <div>
@@ -423,11 +365,11 @@ html,body{
             <div class="limitWrap">
               <select class="limitSelect" id="newsLimit">
                 <?php
-                  $opts = [6,8,10,15,20,30,60];
-                  foreach ($opts as $v) {
-                    $sel = ((int)$settings['NewsPortfolioTotalLimit'] === $v) ? 'selected' : '';
-                    echo "<option value=\"{$v}\" {$sel}>{$v}</option>";
-                  }
+                $opts = [6,8,10,15,20,30,60];
+                foreach ($opts as $v) {
+                  $sel = ((int)$settings['NewsPortfolioTotalLimit'] === $v) ? 'selected' : '';
+                  echo "<option value=\"{$v}\" {$sel}>{$v}</option>";
+                }
                 ?>
               </select>
             </div>
@@ -438,11 +380,11 @@ html,body{
             <div class="limitWrap">
               <select class="limitSelect" id="newsPerSymbol">
                 <?php
-                  $opts = [1,2,3,4,5,6,8,10];
-                  foreach ($opts as $v) {
-                    $sel = ((int)$settings['NewsPerSymbolLimit'] === $v) ? 'selected' : '';
-                    echo "<option value=\"{$v}\" {$sel}>{$v}</option>";
-                  }
+                $opts = [1,2,3,4,5,6,8,10];
+                foreach ($opts as $v) {
+                  $sel = ((int)$settings['NewsPerSymbolLimit'] === $v) ? 'selected' : '';
+                  echo "<option value=\"{$v}\" {$sel}>{$v}</option>";
+                }
                 ?>
               </select>
             </div>
@@ -467,6 +409,8 @@ html,body{
 </div>
 
 <script>
+const USER_ID = <?= (int)$userId ?>;
+
 const newsList = document.getElementById("newsList");
 const calList  = document.getElementById("calList");
 const calPeriod = document.getElementById("calPeriod");
@@ -485,7 +429,6 @@ const saveToast = document.getElementById("saveToast");
 
 let newsMode = "portfolio";
 
-// ---- helpers ----
 function esc(s){
   return String(s ?? "").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
@@ -506,17 +449,16 @@ function pill(text){
   return `<span class="pill">${esc(text)}</span>`;
 }
 
-// ---- NEWS ----
+// ===== NEWS via Laravel API =====
 async function loadNews(){
   newsList.innerHTML = `<div class="cardMeta">Betöltés…</div>`;
   try{
     const want = parseInt(newsLimitSel.value || "20", 10);
     const perSymbol = parseInt(newsPerSymbolSel.value || "3", 10);
 
-    const url = new URL("get_market_news.php", window.location.href);
+    const url = new URL("/api/news", window.location.origin);
+    url.searchParams.set("user_id", String(USER_ID));
     url.searchParams.set("mode", newsMode);
-
-    //backend paraméterezés
     url.searchParams.set("limit", String(want));
     url.searchParams.set("perSymbol", String(perSymbol));
 
@@ -540,7 +482,7 @@ async function loadNews(){
       const dt = it.datetime ? fmtTime(it.datetime) : (it.datetimeStr || "");
       const link = it.url || it.link || "#";
       const desc = it.summary || it.description || "";
-      const sym  = it.related || it.symbol || "";
+      const sym  = it.symbol || it.related || "";
 
       return `
         <div class="newsItem">
@@ -567,19 +509,17 @@ newsModePortfolio.onclick = () => {
   newsModeGeneral.classList.remove("active");
   loadNews();
 };
-
 newsModeGeneral.onclick = () => {
   newsMode = "general";
   newsModeGeneral.classList.add("active");
   newsModePortfolio.classList.remove("active");
   loadNews();
 };
-
 newsRefresh.onclick = loadNews;
 newsLimitSel.onchange = loadNews;
 newsPerSymbolSel.onchange = loadNews;
 
-// ---- CALENDAR ----
+// ===== CALENDAR via Laravel API =====
 function renderCalendarItem(it){
   if (it.type === "earnings" || it.symbol) {
     const timeLabel = it.time ? String(it.time).toUpperCase() : "—";
@@ -630,7 +570,8 @@ async function loadCalendar(){
   try{
     const want = parseInt(calLimitSel.value || "8", 10);
 
-    const url = new URL("get_market_calendar.php", window.location.href);
+    const url = new URL("/api/calendar", window.location.origin);
+    url.searchParams.set("user_id", String(USER_ID));
     url.searchParams.set("limit", String(want));
 
     const r = await fetch(url.toString(), { cache:"no-store" });
@@ -661,26 +602,19 @@ async function loadCalendar(){
 calRefresh.onclick = loadCalendar;
 calLimitSel.onchange = loadCalendar;
 
-// ---- SAVE SETTINGS ----
+// ===== SAVE SETTINGS via legacy proxy (-> Laravel /api/settings) =====
 saveBtn.onclick = async () => {
   saveToast.textContent = "Mentés…";
   try{
     const payload = {
-      AutoLogin: <?php echo (int)$settings['AutoLogin']; ?>,
-      ReceiveNotifications: <?php echo (int)$settings['ReceiveNotifications']; ?>,
-      PreferredChartTheme: <?php echo json_encode($settings['PreferredChartTheme']); ?>,
-      PreferredChartInterval: <?php echo json_encode($settings['PreferredChartInterval']); ?>,
-
-      // ✅ limitek mentése usersettingsbe
-      NewsLimit: <?php echo (int)$settings['NewsLimit']; ?>,
       NewsPerSymbolLimit: parseInt(newsPerSymbolSel.value || "3", 10),
       NewsPortfolioTotalLimit: parseInt(newsLimitSel.value || "20", 10),
-      CalendarLimit: parseInt(calLimitSel.value || "8", 10)
+      CalendarLimit: parseInt(calLimitSel.value || "8", 10),
+      PreferredChartTheme: <?= json_encode($settings['PreferredChartTheme']) ?>,
+      PreferredChartInterval: <?= json_encode($settings['PreferredChartInterval']) ?>,
+      AutoLogin: <?= (int)$settings['AutoLogin'] ?>,
+      ReceiveNotifications: <?= (int)$settings['ReceiveNotifications'] ?>,
     };
-
-    if (newsMode === "general") {
-      payload.NewsLimit = parseInt(newsLimitSel.value || "8", 10);
-    }
 
     const r = await fetch("save_usersettings.php", {
       method: "POST",
@@ -691,12 +625,6 @@ saveBtn.onclick = async () => {
     const data = await r.json();
     if(!data.ok){
       saveToast.textContent = "Hiba: " + (data.error || "nem sikerült");
-      return;
-    }
-
-    if (data.warning) {
-      saveToast.textContent = "Mentve, de: " + data.warning;
-      setTimeout(()=> saveToast.textContent="", 4200);
       return;
     }
 
