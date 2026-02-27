@@ -92,3 +92,26 @@ Eladas
     Sleep    5s
     Wait Until Page Does Not Contain    Nincs nyitott pozíciód.
     Close Browser
+
+Belepes_MasikAdat
+    Open Browser    http://127.0.0.1:8000/legacy/StockMaster/login.php    firefox
+    Maximize Browser Window
+    Input Text    id=username    hibas_felhasznalo
+    Input Text    id=password    hibas_jelszo
+    Click Button    xpath=//button[contains(text(), 'Belépés')]
+    Wait Until Page Contains    Hibás felhasználónév vagy jelszó.    timeout=5s
+    Page Should Not Contain Element    id=kilepes-gomb
+    [Teardown]    Close Browser
+
+Regisztracio_HibasAdat
+    Open Browser    http://127.0.0.1:8000/legacy/StockMaster/register.php    firefox
+    Maximize Browser Window
+    Sleep    3s
+    Input Text    id=username    TesztFelhasznaloRossz
+    Input Text    id=email    tesztRossz@teszt.hu
+    Input Text    id=password    jelszo123
+    Input Text    id=password2    mas_jelszo1
+    Click Button    xpath=//button[contains(text(), 'Regisztráció')]    timeout=5s
+    Wait Until Page Contains    A két jelszó nem egyezik!    timeout=5s
+    Page Should Not Contain    Üdvözöllek
+    [Teardown]    Close Browser
