@@ -11,6 +11,14 @@ use App\Http\Controllers\Api\PositionsController;
 use App\Http\Controllers\Api\PricesController;
 use App\Http\Controllers\Api\NewsController;
 use App\Http\Controllers\Api\CalendarController;
+use App\Http\Controllers\Api\TutorialController;
+
+Route::get('/tutorials/progress', [TutorialController::class, 'progress']);
+Route::get('/tutorials', [TutorialController::class, 'index']);
+Route::get('/tutorials/{id}', [TutorialController::class, 'show']);
+
+Route::post('/tutorials/start', [TutorialController::class, 'start']);
+Route::post('/tutorials/complete', [TutorialController::class, 'complete']);
 
 Route::post('/tick/ingest', [TickController::class, 'ingest']);
 

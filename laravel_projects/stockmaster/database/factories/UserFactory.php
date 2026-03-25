@@ -2,43 +2,48 @@
 
 namespace Database\Factories;
 
+use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Str;
 
-/**
- * @extends \Illuminate\Database\Eloquent\Factories\Factory<\App\Models\User>
- */
 class UserFactory extends Factory
 {
-    /**
-     * The current password being used by the factory.
-     */
-    protected static ?string $password;
+    protected $model = User::class;
 
-    /**
-     * Define the model's default state.
-     *
-     * @return array<string, mixed>
-     */
     public function definition(): array
     {
         return [
-            'name' => fake()->name(),
-            'email' => fake()->unique()->safeEmail(),
-            'email_verified_at' => now(),
-            'password' => static::$password ??= Hash::make('password'),
-            'remember_token' => Str::random(10),
+            'Username' => $this->faker->unique()->userName(),
+            'Email' => $this->faker->unique()->safeEmail(),
+            'PasswordHash' => Hash::make('password'),
+            'RegistrationDate' => now(),
+            'IsLoggedIn' => 0,
+            'PreferredTheme' => 'dark',
+            'NotificationsEnabled' => 1,
+            'DemoBalance' => 10000.00,
+            'RealBalance' => 0.00,
+            'PreferredCurrency' => 'USD',
         ];
     }
 
-    /**
-     * Indicate that the model's email address should be unverified.
-     */
-    public function unverified(): static
+    public function loggedIn(): static
     {
-        return $this->state(fn (array $attributes) => [
-            'email_verified_at' => null,
+        return $this->state(fn () => [
+            'IsLoggedIn' => 1,
+        ]);
+    }
+
+    public function withTheme(string $theme): static
+    {
+        return $this->state(fn () => [
+            'PreferredTheme' => $theme,
+        ]);
+    }
+
+    public function notificationsDisabled(): static
+    {
+        return $this->state(fn () => [
+            'NotificationsEnabled' => 0,
         ]);
     }
 }

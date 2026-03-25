@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
 
 class StateController extends Controller
 {
@@ -14,10 +15,18 @@ class StateController extends Controller
      */
     public function show(Request $request)
     {
-        $userId = (int) $request->query('user_id', 0);
-        if ($userId <= 0) {
-            return response()->json(['ok' => false, 'error' => 'user_id is required'], 400);
+        $validator = Validator::make($request->query(), [
+            'user_id' => ['required', 'integer', 'min:1'],
+        ]);
+        if ($validator->fails()) {
+            return response()->json([
+                'ok' => false,
+                'error' => 'validation_failed',
+                'details' => $validator->errors(),
+            ], 422);
         }
+
+        $userId = (int) $request->query('user_id');
 
         $user = DB::table('users')->select('DemoBalance')->where('ID', $userId)->first();
         if (!$user) {
