@@ -18,6 +18,12 @@ class TutorialProgress extends Model
         'CompletedAt'
     ];
 
+    protected $casts = [
+        'IsCompleted' => 'boolean',
+        'StartedAt' => 'datetime',
+        'CompletedAt' => 'datetime'
+    ];
+
     public function user()
     {
         return $this->belongsTo(User::class, 'UserID', 'ID');

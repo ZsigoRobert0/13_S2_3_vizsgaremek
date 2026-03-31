@@ -9,19 +9,26 @@ use Illuminate\Support\Facades\Validator;
 
 class SettingsController extends Controller
 {
+    private const ALLOWED_INTERVALS = ['1m','5m','15m','1h','1d'];
+
     /**
      * GET /api/settings?user_id=1
      */
     public function show(Request $request)
     {
-        $userId = (int) $request->query('user_id', 0);
+        $validator = Validator::make($request->query(), [
+            'user_id' => ['required', 'integer', 'min:1'],
+        ]);
 
-        if ($userId <= 0) {
+        if ($validator->fails()) {
             return response()->json([
                 'ok' => false,
-                'error' => 'user_id is required'
-            ], 400);
+                'error' => 'validation_failed',
+                'details' => $validator->errors(),
+            ], 422);
         }
+
+        $userId = (int) $request->query('user_id');
 
         $settings = UserSetting::firstOrCreate(
             ['user_id' => $userId],
@@ -66,7 +73,7 @@ class SettingsController extends Controller
 
             'timezone' => ['sometimes', 'string', 'max:64'],
 
-            'chart_interval' => ['sometimes', 'string', 'max:10'],
+            'chart_interval' => ['sometimes', 'string', 'in:' . implode(',', self::ALLOWED_INTERVALS)],
             'chart_theme' => ['sometimes', 'string', 'max:20'],
             'chart_limit_initial' => ['sometimes', 'integer', 'min:100', 'max:5000'],
             'chart_backfill_chunk' => ['sometimes', 'integer', 'min:100', 'max:5000'],

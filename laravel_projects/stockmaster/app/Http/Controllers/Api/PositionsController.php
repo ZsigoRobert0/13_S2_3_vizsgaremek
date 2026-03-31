@@ -15,6 +15,12 @@ class PositionsController extends Controller
     // ha nem kell: 0.0
     private const SHORT_MARGIN_RATE = 0.0;
 
+    private function nowExpr(): string
+    {
+        // SQLite (tests) doesn't support NOW().
+        return DB::getDriverName() === 'sqlite' ? 'CURRENT_TIMESTAMP' : 'NOW()';
+    }
+
     /**
      * POST /api/positions/open
      * JSON: { user_id, symbol, asset_name, quantity, price, side: buy|sell }
@@ -93,7 +99,7 @@ class PositionsController extends Controller
                 DB::table('positions')->insert([
                     'UserID' => $userId,
                     'AssetID' => $assetId,
-                    'OpenTime' => DB::raw('NOW()'),
+                    'OpenTime' => DB::raw($this->nowExpr()),
                     'Quantity' => $qty,
                     'EntryPrice' => $price,
                     'PositionType' => $side, // buy|sell
@@ -217,7 +223,7 @@ class PositionsController extends Controller
                         ->where('UserID', $userId)
                         ->where('IsOpen', 1)
                         ->update([
-                            'CloseTime' => DB::raw('NOW()'),
+                            'CloseTime' => DB::raw($this->nowExpr()),
                             'ExitPrice' => $closePrice,
                             'ProfitLoss' => $pnl,
                             'IsOpen' => 0,

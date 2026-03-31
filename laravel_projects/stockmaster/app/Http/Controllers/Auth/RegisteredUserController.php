@@ -4,10 +4,12 @@ namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Models\UserSetting;
 use Illuminate\Auth\Events\Registered;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rules;
 use Illuminate\View\View;
@@ -29,17 +31,44 @@ class RegisteredUserController extends Controller
      */
     public function store(Request $request): RedirectResponse
     {
-        $request->validate([
-            'name' => ['required', 'string', 'max:255'],
-            'email' => ['required', 'string', 'lowercase', 'email', 'max:255', 'unique:'.User::class],
+        $validated = $request->validate([
+            'username' => ['required', 'string', 'max:255', 'unique:users,Username'],
+            'email' => ['required', 'string', 'lowercase', 'email', 'max:255', 'unique:users,Email'],
             'password' => ['required', 'confirmed', Rules\Password::defaults()],
         ]);
 
-        $user = User::create([
-            'name' => $request->name,
-            'email' => $request->email,
-            'password' => Hash::make($request->password),
-        ]);
+        $user = DB::transaction(function () use ($validated) {
+            $user = User::create([
+                'Username' => $validated['username'],
+                'Email' => $validated['email'],
+                'PasswordHash' => Hash::make($validated['password']),
+                'RegistrationDate' => now(),
+                'IsLoggedIn' => 1,
+                'PreferredTheme' => 'dark',
+                'NotificationsEnabled' => 1,
+                'DemoBalance' => 10000.00,
+                'RealBalance' => 0.00,
+                'PreferredCurrency' => 'USD',
+            ]);
+
+            UserSetting::create([
+                'user_id' => $user->ID,
+                'timezone' => 'Europe/Budapest',
+                'chart_interval' => '1m',
+                'chart_theme' => 'dark',
+                'chart_limit_initial' => 1500,
+                'chart_backfill_chunk' => 1500,
+                'news_limit' => 8,
+                'news_per_symbol_limit' => 3,
+                'news_portfolio_total_limit' => 20,
+                'calendar_limit' => 8,
+                'auto_login' => 0,
+                'receive_notifications' => 1,
+                'data' => null,
+            ]);
+
+            return $user;
+        });
 
         event(new Registered($user));
 

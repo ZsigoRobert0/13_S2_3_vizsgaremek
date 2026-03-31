@@ -3,83 +3,220 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\Candle;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
+use Throwable;
 
-class CandleController extends Controller
+class CalendarController extends Controller
 {
-    private const TF_SECONDS = [
-        '1m'  => 60,
-        '5m'  => 300,
-        '15m' => 900,
-        '1h'  => 3600,
-        '1d'  => 86400,
-    ];
-
-    // Kompatibilitás: ha valahol még get()-et hívsz, ne omoljon össze
-    public function get(Request $request)
-    {
-        return $this->index($request);
-    }
-
     public function index(Request $request)
     {
-        $data = $request->validate([
-            'symbol' => ['required','string','max:20'],
-            'tf'     => ['required','string','in:1m,5m,15m,1h,1d'],
-            'from'   => ['nullable','integer','min:1'],
-            'to'     => ['nullable','integer','min:1'],
-            'limit'  => ['nullable','integer','min:1','max:5000'],
-            'order'  => ['nullable','in:asc,desc'],
-        ]);
+        $userId = (int) $request->query('user_id', 1);
+        $from = (string) $request->query('from', now()->format('Y-m-d'));
+        $to = (string) $request->query('to', now()->addDays(14)->format('Y-m-d'));
 
-        $symbol = strtoupper(trim($data['symbol']));
-        $tf     = $data['tf'];
-        $tfSec  = self::TF_SECONDS[$tf];
-
-        $from   = isset($data['from']) ? (int)$data['from'] : null;
-        $to     = isset($data['to'])   ? (int)$data['to']   : null;
-
-        // ms -> sec védelem (ha valaki ms-et küld)
-        if ($from !== null && $from > 2_000_000_000_000) $from = intdiv($from, 1000);
-        if ($to   !== null && $to   > 2_000_000_000_000) $to   = intdiv($to, 1000);
-
-        $limit = isset($data['limit']) ? (int)$data['limit'] : 300;
-        $order = $data['order'] ?? 'desc'; // DB-ből desc gyorsabb (utolsó N), majd megfordítjuk
-
-        $q = Candle::query()
-            ->where('symbol', $symbol)
-            ->where('tf', $tf);
-
-        if ($from !== null) $q->where('open_ts', '>=', $from);
-        if ($to   !== null) $q->where('open_ts', '<=', $to);
-
-        $rows = $q->orderBy('open_ts', $order)->limit($limit)->get();
-
-        // chartnak asc kell
-        if ($order === 'desc') {
-            $rows = $rows->reverse()->values();
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) {
+            return response()->json([
+                'ok' => false,
+                'error' => 'Bad date format (YYYY-MM-DD)',
+                'from' => $from,
+                'to' => $to,
+                'items' => [],
+            ], 400);
         }
 
-        $candles = $rows->map(function ($c) {
-            return [
-                'time'  => (int)$c->open_ts, // UNIX seconds
-                'open'  => (float)$c->open,
-                'high'  => (float)$c->high,
-                'low'   => (float)$c->low,
-                'close' => (float)$c->close,
-            ];
-        })->all();
+        $s = $this->getUserSettings($userId);
+        $defCalendarLimit = (int) ($s['calendar_limit'] ?? 8);
 
-        return response()->json([
-            'ok'      => true,
-            'symbol'  => $symbol,
-            'tf'      => $tf,
-            'tf_sec'  => $tfSec,
-            'from'    => $from,
-            'to'      => $to,
-            'count'   => count($candles),
-            'candles' => $candles,
-        ]);
+        $limit = (int) $request->query('limit', $defCalendarLimit);
+        $limit = max(3, min(60, $limit));
+
+        $cacheKey = "sm:cal:$userId:$from:$to:$limit";
+        $cached = Cache::get($cacheKey);
+        if (is_array($cached)) {
+            return response()->json($cached);
+        }
+
+        $apiKey = env('FINNHUB_API_KEY');
+        if (!$apiKey) {
+            $out = [
+                'ok' => true,
+                'mode' => 'demo',
+                'from' => $from,
+                'to' => $to,
+                'source' => 'demo',
+                'limit' => $limit,
+                'warning' => 'FINNHUB_API_KEY not set, demo mode',
+                'items' => array_slice($this->demoCalendar($from), 0, $limit),
+            ];
+            Cache::put($cacheKey, $out, 60);
+            return response()->json($out);
+        }
+
+        try {
+            $econUrl = "https://finnhub.io/api/v1/calendar/economic?from=" . urlencode($from)
+                . "&to=" . urlencode($to)
+                . "&token=" . urlencode($apiKey);
+
+            $econResp = Http::timeout(5)->retry(1, 200)->get($econUrl);
+
+            if ($econResp->ok()) {
+                $payload = $econResp->json();
+                $events = $payload['economicCalendar'] ?? [];
+                if (!is_array($events)) {
+                    $events = [];
+                }
+
+                $outItems = [];
+                foreach (array_slice($events, 0, $limit) as $e) {
+                    $outItems[] = [
+                        'date' => $e['date'] ?? '',
+                        'country' => $e['country'] ?? '',
+                        'event' => $e['event'] ?? '',
+                        'impact' => $e['impact'] ?? '',
+                        'actual' => $e['actual'] ?? null,
+                        'forecast' => $e['forecast'] ?? null,
+                        'previous' => $e['previous'] ?? null,
+                    ];
+                }
+
+                $out = [
+                    'ok' => true,
+                    'mode' => 'economic',
+                    'from' => $from,
+                    'to' => $to,
+                    'source' => 'finnhub',
+                    'limit' => $limit,
+                    'items' => $outItems,
+                ];
+
+                Cache::put($cacheKey, $out, 60);
+                return response()->json($out);
+            }
+        } catch (Throwable $e) {
+            // megyünk tovább earnings fallbackre
+        }
+
+        try {
+            $earnUrl = "https://finnhub.io/api/v1/calendar/earnings?from=" . urlencode($from)
+                . "&to=" . urlencode($to)
+                . "&token=" . urlencode($apiKey);
+
+            $earnResp = Http::timeout(5)->retry(1, 200)->get($earnUrl);
+
+            if ($earnResp->ok()) {
+                $payload = $earnResp->json();
+                $items = $payload['earningsCalendar'] ?? [];
+                if (!is_array($items)) {
+                    $items = [];
+                }
+
+                $outItems = [];
+                foreach (array_slice($items, 0, $limit) as $e) {
+                    $symbol = (string) ($e['symbol'] ?? '');
+                    $date = (string) ($e['date'] ?? ($e['earningsDate'] ?? ''));
+                    $time = (string) ($e['time'] ?? '');
+                    $quarter = (string) ($e['quarter'] ?? '');
+
+                    $outItems[] = [
+                        'date' => $date,
+                        'type' => 'earnings',
+                        'symbol' => $symbol,
+                        'title' => trim($symbol . ' earnings'),
+                        'time' => $time,
+                        'quarter' => $quarter,
+                        'epsActual' => $e['epsActual'] ?? ($e['actual'] ?? null),
+                        'epsEstimate' => $e['epsEstimate'] ?? ($e['estimate'] ?? null),
+                        'epsSurprise' => $e['epsSurprise'] ?? null,
+                        'epsSurprisePercent' => $e['epsSurprisePercent'] ?? null,
+                        'revenueActual' => $e['revenueActual'] ?? null,
+                        'revenueEstimate' => $e['revenueEstimate'] ?? null,
+                        'yearAgo' => $e['yearAgo'] ?? null,
+                    ];
+                }
+
+                $out = [
+                    'ok' => true,
+                    'mode' => 'earnings',
+                    'from' => $from,
+                    'to' => $to,
+                    'source' => 'finnhub',
+                    'limit' => $limit,
+                    'note' => 'Economic calendar failed, earnings fallback used.',
+                    'items' => $outItems,
+                ];
+
+                Cache::put($cacheKey, $out, 60);
+                return response()->json($out);
+            }
+        } catch (Throwable $e) {
+            // megyünk tovább demo fallbackre
+        }
+
+        $out = [
+            'ok' => true,
+            'mode' => 'demo',
+            'from' => $from,
+            'to' => $to,
+            'source' => 'demo',
+            'limit' => $limit,
+            'warning' => 'Finnhub calendar not available with this key/plan.',
+            'items' => array_slice($this->demoCalendar($from), 0, $limit),
+        ];
+
+        Cache::put($cacheKey, $out, 60);
+        return response()->json($out);
+    }
+
+    private function demoCalendar(string $from): array
+    {
+        return [
+            [
+                'date' => $from,
+                'country' => 'US',
+                'event' => 'CPI (demo)',
+                'impact' => 'high',
+                'actual' => null,
+                'forecast' => null,
+                'previous' => null,
+            ],
+            [
+                'date' => date('Y-m-d', strtotime($from . ' +3 days')),
+                'country' => 'US',
+                'event' => 'FOMC Minutes (demo)',
+                'impact' => 'medium',
+                'actual' => null,
+                'forecast' => null,
+                'previous' => null,
+            ],
+            [
+                'date' => date('Y-m-d', strtotime($from . ' +7 days')),
+                'country' => 'US',
+                'event' => 'GDP (demo)',
+                'impact' => 'high',
+                'actual' => null,
+                'forecast' => null,
+                'previous' => null,
+            ],
+            [
+                'date' => date('Y-m-d', strtotime($from . ' +10 days')),
+                'country' => 'US',
+                'event' => 'PPI (demo)',
+                'impact' => 'medium',
+                'actual' => null,
+                'forecast' => null,
+                'previous' => null,
+            ],
+        ];
+    }
+
+    private function getUserSettings(int $userId): array
+    {
+        $row = \DB::table('user_settings')->where('user_id', $userId)->first();
+        if (!$row) {
+            return [];
+        }
+        return (array) $row;
     }
 }

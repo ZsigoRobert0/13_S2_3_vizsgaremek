@@ -17,8 +17,17 @@ class Tutorial extends Model
         'Content'
     ];
 
+    protected $casts = [
+        'Tags' => 'array'
+    ];
+
     public function progress()
     {
         return $this->hasMany(TutorialProgress::class, 'TutorialID', 'ID');
+    }
+
+    public function userProgress($userId)
+    {
+        return $this->progress()->where('UserID', $userId)->first();
     }
 }
