@@ -20,7 +20,7 @@ require_once __DIR__ . '/_bootstrap.php';
     <div class="login-wrapper">
         <div class="login-card">
 
-            <div class="login-logo">StockMaster</div>
+            <div class="login-logo">PénzKút</div>
             <h1 class="login-title">Bejelentkezés</h1>
 
             <!-- PHP hiba kiírás -->
@@ -55,7 +55,7 @@ require_once __DIR__ . '/_bootstrap.php';
         </div>
 
         <div class="login-footer-text">
-            © <?php echo date('Y'); ?> StockMaster • Portfóliókezelő
+            © <?php echo date('Y'); ?> PénzKút • Portfóliókezelő
         </div>
     </div>
 

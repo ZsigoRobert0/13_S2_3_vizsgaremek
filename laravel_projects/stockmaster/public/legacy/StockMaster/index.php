@@ -15,7 +15,7 @@ $username = (string)($user["Username"] ?? "");
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>StockMaster — Főoldal</title>
+  <title>PénzKút — Főoldal</title>
 
   <!-- app css -->
   <link rel="stylesheet" href="app.css?v=1">
@@ -41,9 +41,9 @@ $username = (string)($user["Username"] ?? "");
     <!-- BAL -->
     <aside class="sidebar">
       <div class="brand">
-        <div class="logo"><img src="StockMaster.png" alt="logo"></div>
+        <div class="logo"><img src="Pénzkút.png" alt="logo"></div>
         <div>
-          <h1>StockMaster</h1>
+          <h1>PénzKút</h1>
           <div class="sub">Üdv, <span id="username"></span>!</div>
         </div>
       </div>
