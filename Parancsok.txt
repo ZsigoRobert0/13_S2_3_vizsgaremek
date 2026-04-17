@@ -1,0 +1,2 @@
+Teljes teszt: php artisan test
+API Teszt: php artisan test --filter=ApiSmokeTest
