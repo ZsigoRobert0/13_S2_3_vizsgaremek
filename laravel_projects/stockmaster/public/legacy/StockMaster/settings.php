@@ -82,7 +82,7 @@ $tickerStr = implode(', ', array_keys($tickers));
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>StockMaster — Beállítások</title>
+<title>Pénzkút — Beállítások</title>
 
 <link rel="stylesheet" href="app.css?v=2">
 
@@ -638,7 +638,7 @@ html,body{
   <div class="tutorialShell">
     <div class="tutorialHead">
       <div class="tutorialHeadLeft">
-        <h2 class="tutorialTitle">StockMaster Oktatóközpont</h2>
+        <h2 class="tutorialTitle">Pénzkút Oktatóközpont</h2>
         <div class="tutorialSub">
           A meglévő tutorial API-ra kötve. A státusz a <strong>tutorialprogress</strong> táblába íródik, az interaktív tananyag pedig külön lesson-player oldalon nyílik meg.
         </div>

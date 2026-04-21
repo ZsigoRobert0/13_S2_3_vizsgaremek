@@ -30,7 +30,7 @@ function finnhub_get_json(string $url): array
         CURLOPT_FOLLOWLOCATION => true,
         CURLOPT_HTTPHEADER => [
             "Accept: application/json",
-            "User-Agent: StockMaster/1.0"
+            "User-Agent: Pénzkút/1.0"
         ],
     ]);
 

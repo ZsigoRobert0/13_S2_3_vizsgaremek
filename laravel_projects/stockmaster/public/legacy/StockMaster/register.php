@@ -8,7 +8,7 @@ require_once __DIR__ . '/_bootstrap.php';
 <html lang="hu">
 <head>
     <meta charset="UTF-8">
-    <title>StockMaster – Regisztráció</title>
+    <title>Pénzkút – Regisztráció</title>
     <link rel="stylesheet" href="register_style.css">
 </head>
 
@@ -20,7 +20,7 @@ require_once __DIR__ . '/_bootstrap.php';
     <div class="login-wrapper">
 
         <div class="register-card">
-            <div class="logo">StockMaster</div>
+            <div class="logo">Pénzkút</div>
             <h2 class="register-title">Regisztráció</h2>
 
             <!-- PHP hiba kiírás -->
@@ -65,7 +65,7 @@ require_once __DIR__ . '/_bootstrap.php';
         </div>
 
         <div class="register-footer">
-            © <?php echo date('Y'); ?> StockMaster • Portfóliókezelő
+            © <?php echo date('Y'); ?> Pénzkút • Portfóliókezelő
         </div>
 
     </div>

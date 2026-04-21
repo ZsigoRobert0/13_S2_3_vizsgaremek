@@ -117,7 +117,7 @@ session_write_close();
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>StockMaster — Statisztikák</title>
+<title>Pénzkút — Statisztikák</title>
 
 <link rel="stylesheet" href="style.css">
 
