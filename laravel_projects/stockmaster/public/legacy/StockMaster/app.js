@@ -10,9 +10,9 @@
 
   // ár frissítés: csak látható + selected + positions
   // FONTOS: Finnhub limit miatt ritkítunk + kevesebb symbolt kérünk egyszerre
-  const VISIBLE_PRICE_POLL_MS = 4000;
-  const SELECTED_INGEST_MS = 8000;
-  const POSITIONS_INGEST_MS = 15000;
+  const VISIBLE_PRICE_POLL_MS = 5000;
+  const SELECTED_INGEST_MS = 15000;
+  const POSITIONS_INGEST_MS = 20000;
 
   // chart
   const REALTIME_MS = 4500;
@@ -683,11 +683,8 @@
     // ár azonnal
     fetchPriceForSymbol(a.symbol, { ingest: false, priceEveryMs: 0 });
 
-    // ingest: ne spam-eljük (Finnhub limit)
+    // ingest: csak 1 azonnali hívás, ne verjük szét a limitet
     fetchPriceForSymbol(a.symbol, { ingest: true, ingestEveryMs: 0 });
-    setTimeout(() => fetchPriceForSymbol(a.symbol, { ingest: true, ingestEveryMs: 8000 }), 800);
-    setTimeout(() => fetchPriceForSymbol(a.symbol, { ingest: true, ingestEveryMs: 8000 }), 1600);
-
     setTimeout(() => chartLoadInitial(true), 900);
   }
 
@@ -719,7 +716,7 @@
   });
 
   // ====== PRICE LOOP: visible only ======
-  function getVisibleSymbolsInSidebar(max = 8) {
+  function getVisibleSymbolsInSidebar(max = 12) {
     const els = Array.from(document.querySelectorAll('.price[data-symbol]'));
     const out = [];
     for (const el of els) {
@@ -736,16 +733,21 @@
     setInterval(refreshState, STATE_POLL_MS);
 
     setInterval(() => {
-      const visible = getVisibleSymbolsInSidebar(8);
-      for (const sym of visible) {
-        fetchPriceForSymbol(sym, { ingest: false, priceEveryMs: 12000 });
-      }
-      if (selected?.symbol) fetchPriceForSymbol(selected.symbol, { ingest: false, priceEveryMs: 6000 });
+    const visible = getVisibleSymbolsInSidebar(12);
+
+    for (const sym of visible) {
+      fetchPriceForSymbol(sym, { ingest: false, priceEveryMs: 5000 });
+    }
+    if (selected?.symbol) {
+      fetchPriceForSymbol(selected.symbol, { ingest: false, priceEveryMs: 3000 });
+    }
     }, VISIBLE_PRICE_POLL_MS);
 
-    setInterval(() => {
-      if (selected?.symbol) fetchPriceForSymbol(selected.symbol, { ingest: true, ingestEveryMs: SELECTED_INGEST_MS });
-    }, 2500);
+   setInterval(() => {
+      if (selected?.symbol) {
+        fetchPriceForSymbol(selected.symbol, { ingest: true, ingestEveryMs: SELECTED_INGEST_MS });
+      }
+    }, 3000);
 
     setInterval(() => {
       for (const p of positions || []) {
@@ -754,7 +756,7 @@
           fetchPriceForSymbol(sym, { ingest: true, ingestEveryMs: POSITIONS_INGEST_MS });
         }
       }
-    }, 4000);
+    }, 10000);
   }
 
   // ====== CHART (a te stabil logikáddal) ======

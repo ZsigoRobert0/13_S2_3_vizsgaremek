@@ -41,7 +41,7 @@ $username = (string)($user["Username"] ?? "");
     <!-- BAL -->
     <aside class="sidebar">
       <div class="brand">
-        <div class="logo"><img src="Pénzkút.png" alt="logo"></div>
+        <div class="logo"><img src="pénzkút.png" alt="logo"></div>
         <div>
           <h1>PénzKút</h1>
           <div class="sub">Üdv, <span id="username"></span>!</div>

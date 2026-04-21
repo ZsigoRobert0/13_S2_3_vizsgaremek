@@ -46,8 +46,10 @@ class PricesController extends Controller
         foreach ($symbols as $symbol) {
             $symbol = strtoupper($symbol);
 
-            // Cache: price-only 2s, ingest 1s (hogy a tick friss legyen)
-            $ttl = $ingest ? 1 : 2;
+            // Kíméljük a Finnhubot:
+            // - sidebar áraknak bőven elég 15s cache
+            // - ingestnél is legyen kis puffer, ne verjük szét az upstreamet
+            $ttl = $ingest ? 3 : 6;
             $cacheKey = "sm:quote:" . ($ingest ? "i:" : "p:") . $symbol;
 
             $cached = Cache::get($cacheKey);
@@ -99,17 +101,26 @@ class PricesController extends Controller
 
                 Cache::put($cacheKey, $payload, $ttl);
                 // price-only cache frissítése fallbacknak
-                Cache::put("sm:quote:p:" . $symbol, $payload, 2);
+                Cache::put("sm:quote:p:" . $symbol, $payload, 20);
 
                 $data[$symbol] = $payload;
 
             } catch (\Throwable $e) {
+            // Ha Finnhub hiba van, próbáljunk visszaadni utolsó ismert árat
+            $fallback = Cache::get("sm:quote:p:" . $symbol);
+
+            if ($fallback) {
+                $data[$symbol] = $fallback;
+            } else {
                 $errors[$symbol] = $e->getMessage();
-                Log::warning('prices.index failed', [
-                    'symbol' => $symbol,
-                    'ingest' => $ingest,
-                    'err'    => $e->getMessage()
-                ]);
+            }
+
+            Log::warning('prices.index failed', [
+                'symbol' => $symbol,
+                'ingest' => $ingest,
+                'err'    => $e->getMessage()
+            ]);
+
             } finally {
                 try { $lock->release(); } catch (\Throwable $e) {}
             }
@@ -124,8 +135,8 @@ class PricesController extends Controller
 
     private function fetchFinnhubQuote(string $symbol, string $apiKey): array
     {
-        $resp = Http::timeout(2)
-            ->retry(1, 150)
+        $resp = Http::timeout(4)
+            ->retry(1, 250)
             ->get('https://finnhub.io/api/v1/quote', [
                 'symbol' => $symbol,
                 'token'  => $apiKey,

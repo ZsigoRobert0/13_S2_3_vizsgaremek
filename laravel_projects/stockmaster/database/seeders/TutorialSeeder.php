@@ -21,7 +21,7 @@ A részvények ára azért mozog folyamatosan, mert a piac szereplői eltérően
 
 A részvénykereskedés szempontjából fontos megérteni, hogy két külön világ találkozik benne: a hosszú távú befektetés és a rövid távú spekuláció. Egy befektető évekre vesz részvényt, mert hisz a cég növekedésében. Egy trader viszont gyakran csak az ármozgást akarja kihasználni.
 
-A StockMaster rendszerben a részvény elsősorban kereskedhető instrumentumként jelenik meg. Itt a célod az, hogy megértsd:
+A Pénzkút rendszerben a részvény elsősorban kereskedhető instrumentumként jelenik meg. Itt a célod az, hogy megértsd:
 - mit veszel vagy adsz el,
 - mi mozgatja az árat,
 - és hogyan lesz egy árfolyammozgásból nyereség vagy veszteség.
@@ -50,7 +50,7 @@ Mert a candle nem csak szám, hanem piaci viselkedés lenyomata. Megmutatja:
 - történt-e visszautasítás egy szintről,
 - és hogy az időszak végén ki maradt fölényben.
 
-A StockMaster chartja candle-adatokból épül fel. Ezért ha megérted a gyertyákat, akkor nem csak vonalakat látsz, hanem piaci döntések nyomait.
+A Pénzkút chartja candle-adatokból épül fel. Ezért ha megérted a gyertyákat, akkor nem csak vonalakat látsz, hanem piaci döntések nyomait.
 TEXT
             ],
             [
@@ -66,7 +66,7 @@ Sell esetén arra számítasz, hogy az ár csökkenni fog. Ez short gondolkodás
 
 A két irány közötti különbség nem csak technikai, hanem gondolkodásbeli is. Sokan csak az emelkedésből akarnak profitálni, pedig a piac lefelé is adhat lehetőséget.
 
-A StockMaster rendszerben nagyon fontos, hogy tisztán lásd:
+A Pénzkút rendszerben nagyon fontos, hogy tisztán lásd:
 - milyen irányba nyitsz pozíciót,
 - milyen áron lépsz be,
 - mekkora mennyiséggel kereskedsz,
@@ -89,7 +89,7 @@ Ez azért fontos, mert már a belépés pillanatában hátrányból indulsz. Ha 
 
 Sok kezdő ezt alábecsüli, pedig rövid távú kereskedésnél a spread komoly tényező lehet. Minél kisebb mozgásokra tradelsz, annál jobban számít.
 
-A StockMasterben a spread külön is megjelenhet, ezért fontos megérteni, hogy ez nem hiba vagy vizuális extra, hanem valódi kereskedési költség.
+A Pénzkútben a spread külön is megjelenhet, ezért fontos megérteni, hogy ez nem hiba vagy vizuális extra, hanem valódi kereskedési költség.
 
 A jó trader nem csak a chartot nézi, hanem azt is:
 - mennyibe kerül a belépés,
@@ -116,7 +116,7 @@ Pozíció nyitás előtt mindig tedd fel magadnak a kérdéseket:
 - Mekkora veszteséget vállalok?
 - Mi az elvárt célár vagy menedzsment terv?
 
-A StockMaster felületén a belépés technikailag egyszerű, de a döntés mögötte nem az. A rendszer csak végrehajtja, amit te elhatározol. Ezért a pozíciónyitás mindig gondolkodási fegyelmet is igényel.
+A Pénzkút felületén a belépés technikailag egyszerű, de a döntés mögötte nem az. A rendszer csak végrehajtja, amit te elhatározol. Ezért a pozíciónyitás mindig gondolkodási fegyelmet is igényel.
 TEXT
             ],
             [
@@ -138,7 +138,7 @@ A jó risk management eredménye:
 - stabilabb döntéshozatal,
 - hosszabb távon fenntartható fejlődés.
 
-A StockMaster oktatási logikájában ez az egyik legfontosabb haladó téma, mert hiába jó a belépésed, ha rosszul menedzseled a kockázatot, hosszú távon nem maradsz játékban.
+A Pénzkút oktatási logikájában ez az egyik legfontosabb haladó téma, mert hiába jó a belépésed, ha rosszul menedzseled a kockázatot, hosszú távon nem maradsz játékban.
 TEXT
             ],
             [
@@ -159,7 +159,7 @@ Ha túl kicsi:
 - lehet, hogy nem veszed komolyan a trade-et,
 - vagy a stratégia nem hozza a kívánt eredményt.
 
-A jó méretezés a stratégia része, nem különálló döntés. A StockMaster célja, hogy a kereskedési gondolkodást ne csak gombnyomásként, hanem rendszerként tanuld meg.
+A jó méretezés a stratégia része, nem különálló döntés. A Pénzkút célja, hogy a kereskedési gondolkodást ne csak gombnyomásként, hanem rendszerként tanuld meg.
 TEXT
             ],
             [
@@ -183,7 +183,7 @@ Ezek a szintek segítenek:
 
 A fontos az, hogy ne pixeles pontosságot várj tőlük. A piac ritkán fordul meg hajszálpontosan ugyanott. Inkább zónákban kell gondolkodni.
 
-A StockMaster későbbi vizuális tutorial blokkjában ezekhez már nagyon jól lehet majd chartos példákat is kötni.
+A Pénzkút későbbi vizuális tutorial blokkjában ezekhez már nagyon jól lehet majd chartos példákat is kötni.
 TEXT
             ],
             [
@@ -205,7 +205,7 @@ Range esetén:
 
 A legnagyobb hiba az, amikor valaki trend stratégiát akar range-ben használni, vagy fordítva. Ezért a piaci környezet felismerése alapvető.
 
-A StockMasterben a chart, a gyertyák és a több timeframe együtt segíthetnek abban, hogy ezt a különbséget megtanuld olvasni.
+A Pénzkútben a chart, a gyertyák és a több timeframe együtt segíthetnek abban, hogy ezt a különbséget megtanuld olvasni.
 TEXT
             ],
             [
@@ -226,7 +226,7 @@ Ilyenkor a spread nőhet, a volatilitás megugorhat, és a normál piaci viselke
 
 Egy haladó trader nem csak azt nézi, mit csinált az ár, hanem azt is, miért mozdulhat most másképp, mint általában.
 
-A StockMaster későbbi fejlesztéseihez ez azért fontos, mert a news modul és a chart logika együtt sokkal erősebb oktatási élményt tud majd adni.
+A Pénzkút későbbi fejlesztéseihez ez azért fontos, mert a news modul és a chart logika együtt sokkal erősebb oktatási élményt tud majd adni.
 TEXT
             ],
             [
@@ -314,7 +314,7 @@ A mentális oldal fő elemei:
 
 A legtöbb rendszer papíron működik, de a trader nem tudja következetesen végigvinni. Ezért a pszichológia nem extra téma, hanem a rendszer része.
 
-A StockMaster oktatóanyag-rendszerében ezt nem szabad röviden elintézni, mert hosszú távon ez különbözteti meg a túlélő tradert a szétesőtől.
+A Pénzkút oktatóanyag-rendszerében ezt nem szabad röviden elintézni, mert hosszú távon ez különbözteti meg a túlélő tradert a szétesőtől.
 TEXT
             ],
             [
@@ -337,7 +337,7 @@ Egy működő stratégia:
 
 Nem elég, hogy valami egyszer működött. Olyan rendszert kell építeni, amit hosszabb távon is végre tudsz hajtani.
 
-A StockMaster egyik későbbi nagy ereje pont az lehet, hogy a kereskedési felület és az oktatási réteg összekapcsolható lesz: vagyis nem csak tanulsz valamit, hanem egyből a platformon tudod értelmezni is.
+A Pénzkút egyik későbbi nagy ereje pont az lehet, hogy a kereskedési felület és az oktatási réteg összekapcsolható lesz: vagyis nem csak tanulsz valamit, hanem egyből a platformon tudod értelmezni is.
 TEXT
             ],
         ];

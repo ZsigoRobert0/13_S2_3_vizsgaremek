@@ -8,7 +8,7 @@ require_once __DIR__ . '/_bootstrap.php';
 <html lang="hu">
 <head>
     <meta charset="UTF-8">
-    <title>StockMaster – Bejelentkezés</title>
+    <title>Pénzkút – Bejelentkezés</title>
     <link rel="stylesheet" href="login_style.css">
 </head>
 
